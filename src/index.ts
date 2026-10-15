@@ -28,41 +28,44 @@ bot.start(async (ctx) => {
   }
 });
 
-// AI Question Generation (DeepSeek)
+// AI Question Generation (Google Gemini - 100% FREE TIER)
 bot.command('generate', async (ctx) => {
-  ctx.reply('DeepSeek AI से UPPSC स्तर का नया प्रश्न बनाया जा रहा है... कृपया 5-10 सेकंड प्रतीक्षा करें ⏳');
+  ctx.reply('Google Gemini AI से UPPSC स्तर का नया प्रश्न बनाया जा रहा है... कृपया 5-10 सेकंड प्रतीक्षा करें ⏳');
   
   try {
     const prompt = `Generate 1 multiple choice question for UPPSC or UPSC exam in Hindi. 
     Return ONLY a raw JSON object (no markdown, no formatting, no backticks) with these exact keys: 
-    exam_type, subject, chapter, question_text, option_a, option_b, option_c, option_d, correct_option (A/B/C/or D), explanation, difficulty.`;
+    exam_type, subject, chapter, question_text, option_a, option_b, option_c, option_d, correct_option (A, B, C, or D), explanation, difficulty.`;
 
-    const response = await fetch('https://api.deepseek.com/chat/completions', {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return ctx.reply('❌ GEMINI_API_KEY सेट नहीं है। कृपया Render में इसे ऐड करें।');
+    }
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.DEEPSEEK_API_KEY}`
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'deepseek-chat',
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.7
+        contents: [{ parts: [{ text: prompt }] }]
       })
     });
 
     const data = await response.json();
     
-    // नया चेक: अगर API ने choices नहीं भेजा (यानी कोई API एरर है)
-    if (!data.choices || !data.choices[0]) {
-      console.error('DeepSeek API Error Details:', data);
-      return ctx.reply('❌ DeepSeek API ने प्रश्न नहीं भेजा। कृपया Render के लॉग्स चेक करें। (कारण: गलत API Key या 0 बैलेंस हो सकता है)');
+    if (!data.candidates || !data.candidates[0]) {
+      console.error('Gemini API Error Details:', data);
+      return ctx.reply('❌ Gemini API ने उत्तर नहीं दिया। कृपया Render के लॉग्स चेक करें।');
     }
 
-    let jsonString = data.choices[0].message.content.trim();
+    let jsonString = data.candidates[0].content.parts[0].text.trim();
     
-    // Clean up if AI adds markdown backticks
+    // Clean up markdown backticks if AI adds them
     if (jsonString.startsWith('```json')) {
       jsonString = jsonString.replace(/^```json\n/, '').replace(/\n```$/, '');
+    } else if (jsonString.startsWith('```')) {
+      jsonString = jsonString.replace(/^```\n/, '').replace(/\n```$/, '');
     }
 
     const q = JSON.parse(jsonString);
@@ -71,13 +74,13 @@ bot.command('generate', async (ctx) => {
     await pool.query(
       `INSERT INTO questions (exam_type, subject, chapter, question_text, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, language) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'Hindi')`,
-      [q.exam_type, q.subject, q.chapter || 'Misc', q.question_text, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option, q.explanation, q.difficulty]
+      [q.exam_type, q.subject, q.chapter || 'Misc', q.question_text, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option.charAt(0), q.explanation, q.difficulty]
     );
 
     ctx.reply(`✅ नया प्रश्न डेटाबेस में सफलतापूर्वक सेव हो गया!\n\nविषय: ${q.subject}\nप्रश्न: ${q.question_text}\n\nअब इसे पोल के रूप में देखने के लिए /quiz टाइप करें।`);
   } catch (error) {
     console.error('AI Generation Error:', error);
-    ctx.reply('❌ प्रश्न बनाने में कोई त्रुटि हुई।');
+    ctx.reply('❌ प्रश्न बनाने में कोई तकनीकी त्रुटि हुई (JSON Parse Error)। कृपया दोबारा /generate दबाएं।');
   }
 });
 
@@ -93,8 +96,9 @@ bot.command('quiz', async (ctx) => {
     const q = res.rows[0];
     const options = [q.option_a, q.option_b, q.option_c, q.option_d];
     
-    // Map A, B, C, D to 0, 1, 2, 3
-    const correctIndex = ['A', 'B', 'C', 'D'].indexOf(q.correct_option.toUpperCase().trim());
+    // Map A, B, C, D to 0, 1, 2, 3 safely
+    const correctOptionLetter = (q.correct_option || 'A').toString().toUpperCase().trim().charAt(0);
+    const correctIndex = ['A', 'B', 'C', 'D'].indexOf(correctOptionLetter);
 
     // Send Telegram Poll (Quiz Mode)
     await ctx.replyWithQuiz(
@@ -113,7 +117,8 @@ bot.command('quiz', async (ctx) => {
 });
 
 bot.launch({ dropPendingUpdates: true }).then(() => {
-  console.log('Bot is running successfully with AI features!');
+  console.log('Bot is running successfully with Gemini AI!');
 });
+
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
