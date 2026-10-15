@@ -51,6 +51,37 @@ bot.command('generate', async (ctx) => {
     });
 
     const data = await response.json();
+    
+    // नया चेक: अगर API ने choices नहीं भेजा (यानी कोई API एरर है)
+    if (!data.choices || !data.choices[0]) {
+      console.error('DeepSeek API Error Details:', data);
+      return ctx.reply('❌ DeepSeek API ने प्रश्न नहीं भेजा। कृपया Render के लॉग्स चेक करें। (कारण: गलत API Key या 0 बैलेंस हो सकता है)');
+    }
+
+    let jsonString = data.choices[0].message.content.trim();
+    
+    // Clean up if AI adds markdown backticks
+    if (jsonString.startsWith('```json')) {
+      jsonString = jsonString.replace(/^```json\n/, '').replace(/\n```$/, '');
+    }
+
+    const q = JSON.parse(jsonString);
+
+    // Save to Supabase Database
+    await pool.query(
+      `INSERT INTO questions (exam_type, subject, chapter, question_text, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, language) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'Hindi')`,
+      [q.exam_type, q.subject, q.chapter || 'Misc', q.question_text, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option, q.explanation, q.difficulty]
+    );
+
+    ctx.reply(`✅ नया प्रश्न डेटाबेस में सफलतापूर्वक सेव हो गया!\n\nविषय: ${q.subject}\nप्रश्न: ${q.question_text}\n\nअब इसे पोल के रूप में देखने के लिए /quiz टाइप करें।`);
+  } catch (error) {
+    console.error('AI Generation Error:', error);
+    ctx.reply('❌ प्रश्न बनाने में कोई त्रुटि हुई।');
+  }
+});
+
+    const data = await response.json();
     let jsonString = data.choices[0].message.content.trim();
     
     // Clean up if AI adds markdown backticks
