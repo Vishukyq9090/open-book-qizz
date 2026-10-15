@@ -28,7 +28,7 @@ bot.start(async (ctx) => {
   }
 });
 
-// NEW: Check Available Models Command
+// Check Available Models Command
 bot.command('checkmodels', async (ctx) => {
   ctx.reply('Google Gemini के उपलब्ध मॉडल्स की लिस्ट चेक की जा रही है... ⏳');
   try {
@@ -39,7 +39,6 @@ bot.command('checkmodels', async (ctx) => {
     const data = await response.json();
     
     if (data.models) {
-      // Filter only models that support text generation (generateContent)
       const supportedModels = data.models
         .filter((m: any) => m.supportedGenerationMethods.includes('generateContent'))
         .map((m: any) => m.name.replace('models/', ''));
@@ -68,8 +67,8 @@ bot.command('generate', async (ctx) => {
       return ctx.reply('❌ GEMINI_API_KEY सेट नहीं है। कृपया Render में इसे ऐड करें।');
     }
 
-    // FALLBACK LIST: बॉट एक-एक करके इन मॉडल्स को ट्राई करेगा
-    const modelsToTry = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro'];
+    // UPDATED FALLBACK LIST: आपके API में मौजूद नए मॉडल्स
+    const modelsToTry = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.5-flash', 'gemini-2.5-pro'];
     let successData = null;
     let usedModel = '';
 
@@ -84,7 +83,6 @@ bot.command('generate', async (ctx) => {
 
         const data = await response.json();
         
-        // अगर इस मॉडल ने सही जवाब दिया, तो लूप से बाहर आ जाएं (Success)
         if (data.candidates && data.candidates[0]) {
           successData = data;
           usedModel = model;
@@ -95,14 +93,12 @@ bot.command('generate', async (ctx) => {
       }
     }
 
-    // अगर सभी मॉडल्स फेल हो गए
     if (!successData) {
-      return ctx.reply('❌ सभी Gemini मॉडल्स फेल हो गए। कृपया /checkmodels कमांड चलाकर देखें कि कौनसे मॉडल्स काम कर रहे हैं।');
+      return ctx.reply('❌ सभी Gemini मॉडल्स फेल हो गए। यह संभवतः API Quota खत्म होने (डेली लिमिट) के कारण है। कृपया कल प्रयास करें या नई API Key इस्तेमाल करें।');
     }
 
     let jsonString = successData.candidates[0].content.parts[0].text.trim();
     
-    // Clean up markdown backticks if AI adds them
     if (jsonString.startsWith('```json')) {
       jsonString = jsonString.replace(/^```json\n/, '').replace(/\n```$/, '');
     } else if (jsonString.startsWith('```')) {
@@ -111,7 +107,6 @@ bot.command('generate', async (ctx) => {
 
     const q = JSON.parse(jsonString);
 
-    // Save to Supabase Database
     await pool.query(
       `INSERT INTO questions (exam_type, subject, chapter, question_text, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, language) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'Hindi')`,
@@ -121,7 +116,7 @@ bot.command('generate', async (ctx) => {
     ctx.reply(`✅ नया प्रश्न सफलतापूर्वक सेव हो गया! (Model: ${usedModel})\n\nविषय: ${q.subject}\nप्रश्न: ${q.question_text}\n\nअब इसे पोल के रूप में देखने के लिए /quiz टाइप करें।`);
   } catch (error) {
     console.error('AI Generation Error:', error);
-    ctx.reply('❌ प्रश्न बनाने में कोई तकनीकी त्रुटि हुई (JSON Parse Error)। कृपया दोबारा /generate दबाएं।');
+    ctx.reply('❌ प्रश्न बनाने में तकनीकी त्रुटि हुई।');
   }
 });
 
@@ -145,7 +140,7 @@ bot.command('quiz', async (ctx) => {
       {
         correct_option_id: correctIndex !== -1 ? correctIndex : 0,
         explanation: q.explanation,
-        open_period: 15 // 15 seconds timer
+        open_period: 15
       }
     );
   } catch (error) {
