@@ -42,7 +42,8 @@ bot.command('generate', async (ctx) => {
       return ctx.reply('❌ GEMINI_API_KEY सेट नहीं है। कृपया Render में इसे ऐड करें।');
     }
 
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+    // यहाँ हमने मॉडल को gemini-1.5-flash-latest कर दिया है
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
