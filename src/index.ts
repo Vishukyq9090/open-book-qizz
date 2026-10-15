@@ -112,9 +112,8 @@ bot.command('quiz', async (ctx) => {
   }
 });
 
-bot.launch().then(() => {
+bot.launch({ dropPendingUpdates: true }).then(() => {
   console.log('Bot is running successfully with AI features!');
 });
-
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
