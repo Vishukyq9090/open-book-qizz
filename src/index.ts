@@ -21,16 +21,42 @@ bot.start(async (ctx) => {
       'INSERT INTO users (telegram_id, username) VALUES ($1, $2) ON CONFLICT (telegram_id) DO NOTHING',
       [telegramId, username]
     );
-    ctx.reply('नमस्ते! ऑल-एग्जाम्स एआई क्विज़ प्लेटफॉर्म में आपका स्वागत है।\n\nनए प्रश्न बनाने के लिए /generate दबाएं।\nक्विज़ शुरू करने के लिए /quiz दबाएं।');
+    ctx.reply('नमस्ते! स्मार्ट AI क्विज़ प्लेटफॉर्म में आपका स्वागत है।\n\nनए प्रश्न बनाने के लिए /generate दबाएं।\nक्विज़ शुरू करने के लिए /quiz दबाएं।\nउपलब्ध मॉडल्स चेक करने के लिए /checkmodels दबाएं।');
   } catch (err) {
     console.error('Database error on start:', err);
     ctx.reply('स्वागत है! बॉट चालू है।');
   }
 });
 
-// AI Question Generation (Google Gemini - 100% FREE TIER)
+// NEW: Check Available Models Command
+bot.command('checkmodels', async (ctx) => {
+  ctx.reply('Google Gemini के उपलब्ध मॉडल्स की लिस्ट चेक की जा रही है... ⏳');
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return ctx.reply('❌ GEMINI_API_KEY सेट नहीं है।');
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+    const data = await response.json();
+    
+    if (data.models) {
+      // Filter only models that support text generation (generateContent)
+      const supportedModels = data.models
+        .filter((m: any) => m.supportedGenerationMethods.includes('generateContent'))
+        .map((m: any) => m.name.replace('models/', ''));
+      
+      ctx.reply(`✅ आपके API Key पर उपलब्ध मॉडल्स:\n\n${supportedModels.join('\n')}\n\nहमारा बॉट इनमें से बेस्ट मॉडल खुद चुन लेगा!`);
+    } else {
+      ctx.reply('❌ मॉडल्स की लिस्ट नहीं मिल पाई।');
+    }
+  } catch (error) {
+    console.error('Check Models Error:', error);
+    ctx.reply('❌ मॉडल्स चेक करने में एरर आ गई।');
+  }
+});
+
+// AI Question Generation with FALLBACK Mechanism
 bot.command('generate', async (ctx) => {
-  ctx.reply('Google Gemini AI से UPPSC स्तर का नया प्रश्न बनाया जा रहा है... कृपया 5-10 सेकंड प्रतीक्षा करें ⏳');
+  ctx.reply('Google Gemini AI से प्रश्न बनाया जा रहा है... कृपया प्रतीक्षा करें ⏳');
   
   try {
     const prompt = `Generate 1 multiple choice question for UPPSC or UPSC exam in Hindi. 
@@ -42,25 +68,39 @@ bot.command('generate', async (ctx) => {
       return ctx.reply('❌ GEMINI_API_KEY सेट नहीं है। कृपया Render में इसे ऐड करें।');
     }
 
-    // यहाँ हमने मॉडल का नाम बिल्कुल सही (gemini-1.5-flash) कर दिया है
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
-      })
-    });
+    // FALLBACK LIST: बॉट एक-एक करके इन मॉडल्स को ट्राई करेगा
+    const modelsToTry = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.0-pro', 'gemini-pro'];
+    let successData = null;
+    let usedModel = '';
 
-    const data = await response.json();
-    
-    if (!data.candidates || !data.candidates[0]) {
-      console.error('Gemini API Error Details:', data);
-      return ctx.reply('❌ Gemini API ने उत्तर नहीं दिया। कृपया Render के लॉग्स चेक करें।');
+    for (const model of modelsToTry) {
+      try {
+        console.log(`Trying model: ${model}...`);
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        });
+
+        const data = await response.json();
+        
+        // अगर इस मॉडल ने सही जवाब दिया, तो लूप से बाहर आ जाएं (Success)
+        if (data.candidates && data.candidates[0]) {
+          successData = data;
+          usedModel = model;
+          break; 
+        }
+      } catch (err) {
+        console.log(`Model ${model} failed, trying next...`);
+      }
     }
 
-    let jsonString = data.candidates[0].content.parts[0].text.trim();
+    // अगर सभी मॉडल्स फेल हो गए
+    if (!successData) {
+      return ctx.reply('❌ सभी Gemini मॉडल्स फेल हो गए। कृपया /checkmodels कमांड चलाकर देखें कि कौनसे मॉडल्स काम कर रहे हैं।');
+    }
+
+    let jsonString = successData.candidates[0].content.parts[0].text.trim();
     
     // Clean up markdown backticks if AI adds them
     if (jsonString.startsWith('```json')) {
@@ -78,7 +118,7 @@ bot.command('generate', async (ctx) => {
       [q.exam_type, q.subject, q.chapter || 'Misc', q.question_text, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option.charAt(0), q.explanation, q.difficulty]
     );
 
-    ctx.reply(`✅ नया प्रश्न डेटाबेस में सफलतापूर्वक सेव हो गया!\n\nविषय: ${q.subject}\nप्रश्न: ${q.question_text}\n\nअब इसे पोल के रूप में देखने के लिए /quiz टाइप करें।`);
+    ctx.reply(`✅ नया प्रश्न सफलतापूर्वक सेव हो गया! (Model: ${usedModel})\n\nविषय: ${q.subject}\nप्रश्न: ${q.question_text}\n\nअब इसे पोल के रूप में देखने के लिए /quiz टाइप करें।`);
   } catch (error) {
     console.error('AI Generation Error:', error);
     ctx.reply('❌ प्रश्न बनाने में कोई तकनीकी त्रुटि हुई (JSON Parse Error)। कृपया दोबारा /generate दबाएं।');
@@ -88,7 +128,6 @@ bot.command('generate', async (ctx) => {
 // Live Telegram Quiz Engine
 bot.command('quiz', async (ctx) => {
   try {
-    // Get a random question from database
     const res = await pool.query('SELECT * FROM questions ORDER BY RANDOM() LIMIT 1');
     if (res.rows.length === 0) {
       return ctx.reply('डेटाबेस में अभी कोई प्रश्न नहीं है। पहले /generate कमांड से प्रश्न बनाएँ।');
@@ -97,11 +136,9 @@ bot.command('quiz', async (ctx) => {
     const q = res.rows[0];
     const options = [q.option_a, q.option_b, q.option_c, q.option_d];
     
-    // Map A, B, C, D to 0, 1, 2, 3 safely
     const correctOptionLetter = (q.correct_option || 'A').toString().toUpperCase().trim().charAt(0);
     const correctIndex = ['A', 'B', 'C', 'D'].indexOf(correctOptionLetter);
 
-    // Send Telegram Poll (Quiz Mode)
     await ctx.replyWithQuiz(
       q.question_text,
       options,
@@ -118,7 +155,7 @@ bot.command('quiz', async (ctx) => {
 });
 
 bot.launch({ dropPendingUpdates: true }).then(() => {
-  console.log('Bot is running successfully with Gemini AI!');
+  console.log('Bot is running successfully with Smart Fallback AI!');
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
