@@ -1,8 +1,15 @@
 import { Telegraf } from 'telegraf';
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
+import http from 'http';
 
 dotenv.config();
+
+// Render को शांत रखने के लिए डमी वेब सर्वर (ताकि बॉट क्रैश न हो)
+http.createServer((req, res) => {
+  res.write('Bot is running successfully!');
+  res.end();
+}).listen(process.env.PORT || 3000);
 
 const bot = new Telegraf(process.env.BOT_TOKEN || '');
 
@@ -58,16 +65,18 @@ bot.command('generate', async (ctx) => {
   ctx.reply('Google Gemini AI से प्रश्न बनाया जा रहा है... कृपया प्रतीक्षा करें ⏳');
   
   try {
+    // PROMPT UPDATED: Telegram की लिमिट्स को सख्ती से लागू किया गया है
     const prompt = `Generate 1 multiple choice question for UPPSC or UPSC exam in Hindi. 
-    Return ONLY a raw JSON object (no markdown, no formatting, no backticks) with these exact keys: 
+    STRICT RULES FOR TELEGRAM POLL LIMITS:
+    - question_text MUST be under 250 characters.
+    - option_a, option_b, option_c, option_d MUST be under 80 characters each.
+    - explanation MUST be under 180 characters.
+    Return ONLY a raw JSON object (no markdown) with exact keys: 
     exam_type, subject, chapter, question_text, option_a, option_b, option_c, option_d, correct_option (A, B, C, or D), explanation, difficulty.`;
 
     const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return ctx.reply('❌ GEMINI_API_KEY सेट नहीं है। कृपया Render में इसे ऐड करें।');
-    }
+    if (!apiKey) return ctx.reply('❌ GEMINI_API_KEY सेट नहीं है।');
 
-    // UPDATED FALLBACK LIST: आपके API में मौजूद नए मॉडल्स
     const modelsToTry = ['gemini-2.5-flash', 'gemini-flash-latest', 'gemini-3.5-flash', 'gemini-2.5-pro'];
     let successData = null;
     let usedModel = '';
@@ -94,7 +103,7 @@ bot.command('generate', async (ctx) => {
     }
 
     if (!successData) {
-      return ctx.reply('❌ सभी Gemini मॉडल्स फेल हो गए। यह संभवतः API Quota खत्म होने (डेली लिमिट) के कारण है। कृपया कल प्रयास करें या नई API Key इस्तेमाल करें।');
+      return ctx.reply('❌ सभी Gemini मॉडल्स फेल हो गए। कृपया कल प्रयास करें।');
     }
 
     let jsonString = successData.candidates[0].content.parts[0].text.trim();
@@ -113,7 +122,7 @@ bot.command('generate', async (ctx) => {
       [q.exam_type, q.subject, q.chapter || 'Misc', q.question_text, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option.charAt(0), q.explanation, q.difficulty]
     );
 
-    ctx.reply(`✅ नया प्रश्न सफलतापूर्वक सेव हो गया! (Model: ${usedModel})\n\nविषय: ${q.subject}\nप्रश्न: ${q.question_text}\n\nअब इसे पोल के रूप में देखने के लिए /quiz टाइप करें।`);
+    ctx.reply(`✅ नया प्रश्न सेव हो गया! (Model: ${usedModel})\n\nविषय: ${q.subject}\nअब इसे देखने के लिए /quiz टाइप करें।`);
   } catch (error) {
     console.error('AI Generation Error:', error);
     ctx.reply('❌ प्रश्न बनाने में तकनीकी त्रुटि हुई।');
@@ -125,32 +134,41 @@ bot.command('quiz', async (ctx) => {
   try {
     const res = await pool.query('SELECT * FROM questions ORDER BY RANDOM() LIMIT 1');
     if (res.rows.length === 0) {
-      return ctx.reply('डेटाबेस में अभी कोई प्रश्न नहीं है। पहले /generate कमांड से प्रश्न बनाएँ।');
+      return ctx.reply('डेटाबेस में अभी कोई प्रश्न नहीं है। पहले /generate से प्रश्न बनाएँ।');
     }
 
     const q = res.rows[0];
-    const options = [q.option_a, q.option_b, q.option_c, q.option_d];
     
+    // Safety Truncation: अगर पुराना प्रश्न लंबा है, तो उसे काटकर Telegram लिमिट में लाएं
+    const safeQuestion = q.question_text.length > 290 ? q.question_text.substring(0, 290) + '...' : q.question_text;
+    const safeOptions = [
+      q.option_a.substring(0, 95), 
+      q.option_b.substring(0, 95), 
+      q.option_c.substring(0, 95), 
+      q.option_d.substring(0, 95)
+    ];
+    const safeExplanation = (q.explanation && q.explanation.length > 190) ? q.explanation.substring(0, 190) + '...' : (q.explanation || 'व्याख्या उपलब्ध नहीं है');
+
     const correctOptionLetter = (q.correct_option || 'A').toString().toUpperCase().trim().charAt(0);
     const correctIndex = ['A', 'B', 'C', 'D'].indexOf(correctOptionLetter);
 
     await ctx.replyWithQuiz(
-      q.question_text,
-      options,
+      safeQuestion,
+      safeOptions,
       {
         correct_option_id: correctIndex !== -1 ? correctIndex : 0,
-        explanation: q.explanation,
+        explanation: safeExplanation,
         open_period: 15
       }
     );
   } catch (error) {
     console.error('Quiz Error:', error);
-    ctx.reply('क्विज़ भेजने में कोई तकनीकी समस्या आई।');
+    ctx.reply('❌ क्विज़ भेजने में तकनीकी समस्या आई। (शायद प्रश्न Telegram की लिमिट से बड़ा है)');
   }
 });
 
 bot.launch({ dropPendingUpdates: true }).then(() => {
-  console.log('Bot is running successfully with Smart Fallback AI!');
+  console.log('Bot is running smoothly with port listening!');
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
