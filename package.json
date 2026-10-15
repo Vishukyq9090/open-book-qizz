@@ -4,7 +4,7 @@
   "description": "All Exams AI Quiz Platform & Telegram Bot",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc src/index.ts --rootDir src --outDir dist --esModuleInterop --skipLibCheck --target ES2022 --module commonjs",
     "start": "node dist/index.js"
   },
   "dependencies": {
