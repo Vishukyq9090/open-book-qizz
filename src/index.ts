@@ -89,12 +89,11 @@ bot.command('quiz', async (ctx) => {
     // Map A, B, C, D to 0, 1, 2, 3
     const correctIndex = ['A', 'B', 'C', 'D'].indexOf(q.correct_option.toUpperCase().trim());
 
-    // Send Telegram Poll (Quiz Mode)
-    await ctx.replyWithPoll(
+   // Send Telegram Poll (Quiz Mode)
+    await ctx.replyWithQuiz(
       q.question_text,
       options,
       {
-        type: 'quiz',
         correct_option_id: correctIndex !== -1 ? correctIndex : 0,
         explanation: q.explanation,
         open_period: 15 // 15 seconds timer
