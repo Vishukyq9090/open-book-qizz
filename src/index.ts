@@ -59,4 +59,70 @@ cron.schedule('0 9-23 * * *', async () => {
     // यहाँ हम डेटाबेस से उस विषय के 50 सवाल उठाएंगे और एक-एक करके भेजेंगे
     // startLiveTest(channel.chat_id, subject); // यह फंक्शन हम अगले स्टेप में बनाएंगे
   }
+  // ---------------------------------------------------------
+// 5. THE LIVE TEST ENGINE (50 Questions in 50 Minutes)
+// ---------------------------------------------------------
+
+const startLiveTest = async (chatId: number, subject: string) => {
+  let questionCount = 0;
+  const maxQuestions = 50; // एक घंटे में 50 प्रश्न
+  
+  // यह लूप हर 1 मिनट (60,000 milliseconds) में चलेगा
+  const testInterval = setInterval(async () => {
+    questionCount++;
+    
+    // जब 50 प्रश्न पूरे हो जाएं, तो टेस्ट रोक दें
+    if (questionCount > maxQuestions) {
+      clearInterval(testInterval);
+      bot.telegram.sendMessage(chatId, `🏁 **${subject} का लाइव टेस्ट समाप्त!**\n\nउम्मीद है आपने अच्छा प्रदर्शन किया होगा। अपना स्कोर चेक करें। अगले टेस्ट का अनाउंसमेंट 10 मिनट में होगा!`);
+      return;
+    }
+
+    try {
+      // लॉजिक: डेटाबेस से वह प्रश्न निकालें जो इस विषय का हो और इस ग्रुप (chatId) में पहले कभी न पूछा गया हो
+      const res = await pool.query(`
+        SELECT * FROM questions 
+        WHERE subject ILIKE $1 
+        AND id NOT IN (SELECT question_id FROM asked_history WHERE chat_id = $2)
+        ORDER BY RANDOM() LIMIT 1
+      `, [`%${subject}%`, chatId]);
+
+      // अगर डेटाबेस में उस विषय के नए प्रश्न खत्म हो जाएं
+      if (res.rows.length === 0) {
+        clearInterval(testInterval);
+        bot.telegram.sendMessage(chatId, `⚠️ **सिस्टम अलर्ट:** ${subject} के लिए डेटाबेस में कोई नया प्रश्न नहीं बचा है! एडमिन कृपया और प्रश्न जनरेट करें।`);
+        return;
+      }
+
+      const q = res.rows[0];
+
+      // प्रश्न को asked_history टेबल में सेव कर दें ताकि वह इस ग्रुप में दोबारा कभी न आए
+      await pool.query('INSERT INTO asked_history (chat_id, question_id) VALUES ($1, $2)', [chatId, q.id]);
+
+      // Telegram Poll की लिमिट्स को सुरक्षित रखना
+      const options = [
+        q.option_a.substring(0, 95), 
+        q.option_b.substring(0, 95), 
+        q.option_c.substring(0, 95), 
+        q.option_d.substring(0, 95)
+      ];
+      const correctIndex = ['A', 'B', 'C', 'D'].indexOf((q.correct_option || 'A').toUpperCase().charAt(0));
+
+      // पोल भेजना (45 सेकंड का टाइमर) - 45 सेकंड आंसर के लिए, 15 सेकंड रेस्ट/व्याख्या पढ़ने के लिए
+      await bot.telegram.sendQuiz(
+        chatId,
+        `[Q${questionCount}/${maxQuestions}] ${q.question_text.substring(0, 280)}`,
+        options,
+        {
+          correct_option_id: correctIndex !== -1 ? correctIndex : 0,
+          explanation: q.explanation ? q.explanation.substring(0, 190) : 'व्याख्या उपलब्ध नहीं है',
+          open_period: 45 
+        }
+      );
+
+    } catch (error) {
+      console.error('Error sending live question:', error);
+    }
+  }, 60000); // 60000 ms = 1 मिनट
+};
 });
