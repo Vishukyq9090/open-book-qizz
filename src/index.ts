@@ -41,13 +41,16 @@ cron.schedule('55 8-22 * * *', async () => {
 });
 
 // 3. रिमाइंडर: टेस्ट शुरू होने से 1 मिनट पहले (हर घंटे के 59वें मिनट पर)
-cron.schedule('59 8-22 * * *', async () => {
+cron.schedule('0 9-23 * * *', async () => {
+  const subject = getCurrentSubject();
   const channels = await pool.query('SELECT chat_id FROM channels WHERE is_active = TRUE');
   for (const channel of channels.rows) {
-    bot.telegram.sendMessage(channel.chat_id, `🔥 **GET READY!**\n\nटेस्ट 1 मिनट में शुरू हो रहा है...`);
+    bot.telegram.sendMessage(channel.chat_id, `🚀 **${subject} का लाइव टेस्ट शुरू!**\n\nअब अगले 50 मिनट तक हर 1 मिनट में 1 नया प्रश्न आएगा। All the best!`);
+    
+    // यह फंक्शन अब असली में टेस्ट शुरू कर देगा!
+    startLiveTest(channel.chat_id, subject); 
   }
 });
-
 // 4. टेस्ट की शुरुआत और 50 प्रश्नों की बौछार (हर घंटे के 00 मिनट पर)
 // (नोट: अभी हम इसे सिर्फ ट्रिगर कर रहे हैं, प्रश्नों को लूप में भेजने का लॉजिक Part 3 में जोड़ेंगे)
 cron.schedule('0 9-23 * * *', async () => {
