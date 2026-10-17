@@ -7,7 +7,7 @@ import cron from 'node-cron';
 dotenv.config();
 
 // ---------------------------------------------------------
-// 1. KEEP-ALIVE SERVER & GLOBAL ERROR HANDLERS (ZERO CRASH)
+// 1. KEEP-ALIVE SERVER & GLOBAL ERROR HANDLERS
 // ---------------------------------------------------------
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -38,6 +38,25 @@ const EXAMS = ["UPSC / UPPSC", "SSC / Railway", "Teaching / TET", "All Exams Mix
 
 const activeTests = new Map<number, NodeJS.Timeout>();
 const userStates = new Map<number, { action: string; targetChatId?: number }>();
+
+// Safe Reply Helper (अगर Markdown में कोई स्पेशल कैरेक्टर एरर दे, तो बिना क्रैश हुए नॉर्मल मैसेज भेजेगा)
+const safeSendMessage = async (chatId: number | string, text: string, extra: any = {}) => {
+  try {
+    return await bot.telegram.sendMessage(chatId, text, { parse_mode: 'Markdown', ...extra });
+  } catch (err) {
+    const cleanText = text.replace(/[*_`]/g, '');
+    return await bot.telegram.sendMessage(chatId, cleanText, extra).catch((e) => console.error('Send Error:', e));
+  }
+};
+
+const safeEditMessage = async (ctx: any, text: string, extra: any = {}) => {
+  try {
+    return await ctx.editMessageText(text, { parse_mode: 'Markdown', ...extra });
+  } catch (err) {
+    const cleanText = text.replace(/[*_`]/g, '');
+    return await ctx.editMessageText(cleanText, extra).catch(() => {});
+  }
+};
 
 // ---------------------------------------------------------
 // 3. AUTO-MIGRATING DATABASE SCHEMA (SUPABASE)
@@ -152,6 +171,12 @@ const setSetting = async (key: string, value: string) => {
   await pool.query('INSERT INTO bot_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2', [key, value]);
 };
 
+// Check if User is Master Admin (अगर ADMIN_ID खाली है तो भी ब्लॉक नहीं करेगा)
+const isMasterAdmin = (userId: number): boolean => {
+  if (!ADMIN_ID) return true;
+  return userId.toString() === ADMIN_ID;
+};
+
 // ---------------------------------------------------------
 // 4. DUAL-LAYER FORCE SUBSCRIBE & BAN CHECKER
 // ---------------------------------------------------------
@@ -163,10 +188,9 @@ const isUserBanned = async (userId: number): Promise<boolean> => {
 };
 
 const checkUserSubscription = async (userId: number, chatId?: number): Promise<{ joined: boolean; missing: { title: string; link: string }[] }> => {
-  if (userId.toString() === ADMIN_ID) return { joined: true, missing: [] };
+  if (isMasterAdmin(userId)) return { joined: true, missing: [] };
   const missing: { title: string; link: string }[] = [];
 
-  // Layer 1: Master Admin Force Subscribe
   const masterOn = await getSetting('master_fsub_on');
   const masterId = await getSetting('master_fsub_id');
   const masterLink = await getSetting('master_fsub_link');
@@ -180,7 +204,6 @@ const checkUserSubscription = async (userId: number, chatId?: number): Promise<{
     } catch (err) {}
   }
 
-  // Layer 2: Group Owner Local Force Subscribe
   if (chatId && chatId < 0) {
     try {
       const chRes = await pool.query('SELECT force_sub_id, force_sub_link FROM channels WHERE chat_id = $1', [chatId]);
@@ -198,12 +221,12 @@ const checkUserSubscription = async (userId: number, chatId?: number): Promise<{
   return { joined: missing.length === 0, missing };
 };
 
-// FIXED TYPESCRIPT ARRAY TYPING HERE (any[][])
 const sendForceSubPrompt = async (ctx: any, missing: { title: string; link: string }[]) => {
   const buttons: any[][] = missing.map(m => [Markup.button.url(m.title, m.link)]);
   buttons.push([Markup.button.callback('✅ मैंने जॉइन कर लिया (Verify)', 'verify_fsub')]);
-  return ctx.reply(
-    `🔒 **एक्सेस लॉक्ड!**\n\nक्विज़ खेलने, अपना स्कोर सेव करने और सभी फीचर्स अनलॉक करने के लिए कृपया नीचे दिए गए ऑफिशियल चैनल जॉइन करें:`,
+  return safeSendMessage(
+    ctx.chat.id,
+    `🔒 *एक्सेस लॉक्ड!*\n\nक्विज़ खेलने, अपना स्कोर सेव करने और सभी फीचर्स अनलॉक करने के लिए कृपया नीचे दिए गए ऑफिशियल चैनल जॉइन करें:`,
     Markup.inlineKeyboard(buttons)
   );
 };
@@ -293,6 +316,7 @@ const generateBatchQuestions = async (forcedSubject?: string) => {
         savedCount++;
       }
     }
+    console.log(`✅ Factory saved ${savedCount} questions for ${subject}`);
     return { success: true, count: savedCount, subject };
   } catch (err) {
     return { success: false, count: 0, subject };
@@ -310,7 +334,7 @@ const stopQuizInChat = async (chatId: number, notify: boolean = true) => {
     clearInterval(timer);
     activeTests.delete(chatId);
     if (notify) {
-      await sendLeaderboard(chatId, '🛑 **लाइव टेस्ट समाप्त कर दिया गया है!**');
+      await sendLeaderboard(chatId, '🛑 *लाइव टेस्ट समाप्त कर दिया गया है!*');
     }
   }
 };
@@ -322,26 +346,24 @@ const sendLeaderboard = async (chatId: number, headerText: string) => {
     const botUsername = bot.botInfo?.username || '';
 
     const topRes = await pool.query('SELECT username, score FROM scores WHERE chat_id = $1 ORDER BY score DESC LIMIT 10', [chatId]);
-    let board = `${headerText}\n\n🏆 **TOP 10 LEADERBOARD** 🏆\n\n`;
+    let board = `${headerText}\n\n🏆 *TOP 10 LEADERBOARD* 🏆\n\n`;
     if (topRes.rows.length === 0) {
       board += `अभी तक किसी का स्कोर दर्ज नहीं हुआ है।\n`;
     } else {
       topRes.rows.forEach((r, idx) => {
         const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `${idx + 1}.`;
-        board += `${medal} **${r.username}** — ${r.score} Pts\n`;
+        board += `${medal} ${r.username} — ${r.score} Pts\n`;
       });
     }
     board += `\n${brandText}`;
 
+    const safeLink = brandLink.startsWith('http') ? brandLink : '[https://t.me/telegram](https://t.me/telegram)';
     const kb: any[][] = [
-      [Markup.button.url('🔥 Join Official Channel', brandLink.startsWith('http') ? brandLink : '[https://t.me/telegram](https://t.me/telegram)')],
+      [Markup.button.url('🔥 Join Official Channel', safeLink)],
       [Markup.button.url('➕ Add Bot to Your Group', `[https://t.me/$](https://t.me/$){botUsername}?startgroup=true`)]
     ];
 
-    await bot.telegram.sendMessage(chatId, board, {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard(kb)
-    });
+    await safeSendMessage(chatId, board, Markup.inlineKeyboard(kb));
   } catch (err) {}
 };
 
@@ -355,25 +377,23 @@ const startFastQuiz = async (chatId: number, subject: string, totalQuestions: nu
 
     const brandText = await getSetting('branding_text');
     const brandLink = await getSetting('branding_link');
+    const safeLink = brandLink.startsWith('http') ? brandLink : '[https://t.me/telegram](https://t.me/telegram)';
 
     const startKb: any[][] = [
       [
-        Markup.button.url('📢 Official Channel', brandLink.startsWith('http') ? brandLink : '[https://t.me/telegram](https://t.me/telegram)'),
+        Markup.button.url('📢 Official Channel', safeLink),
         Markup.button.callback('🛑 Stop Test', `stop_quiz_${chatId}`)
       ]
     ];
 
-    await bot.telegram.sendMessage(
+    await safeSendMessage(
       chatId,
-      `🚀 **${subject} का लाइव टेस्ट शुरू हो गया है!** 🚀\n\n` +
-      `📊 कुल प्रश्न: **${totalQuestions}** (Easy ➔ Moderate ➔ Hard)\n` +
-      `⏱ समय: **10 सेकंड प्रति प्रश्न** (Auto-Answer)\n` +
+      `🚀 *${subject} का लाइव टेस्ट शुरू हो गया है!* 🚀\n\n` +
+      `📊 कुल प्रश्न: *${totalQuestions}* (Easy ➔ Moderate ➔ Hard)\n` +
+      `⏱ समय: *10 सेकंड प्रति प्रश्न* (Auto-Answer)\n` +
       `📌 नोट: लीडरबोर्ड में नाम आने के लिए चैनल से जुड़ा होना अनिवार्य है।\n\n` +
       `${brandText}`,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard(startKb)
-      }
+      Markup.inlineKeyboard(startKb)
     );
 
     let currentQ = 0;
@@ -381,7 +401,7 @@ const startFastQuiz = async (chatId: number, subject: string, totalQuestions: nu
       currentQ++;
       if (currentQ > totalQuestions) {
         await stopQuizInChat(chatId, false);
-        await sendLeaderboard(chatId, `🏁 **${subject} का लाइव टेस्ट पूरा हुआ!** 🎉`);
+        await sendLeaderboard(chatId, `🏁 *${subject} का लाइव टेस्ट पूरा हुआ!* 🎉`);
         return;
       }
 
@@ -421,7 +441,7 @@ const startFastQuiz = async (chatId: number, subject: string, totalQuestions: nu
 
         if (res.rows.length === 0) {
           await stopQuizInChat(chatId, false);
-          return bot.telegram.sendMessage(chatId, '⚠️ डेटाबेस में अभी प्रश्न तैयार हो रहे हैं।');
+          return safeSendMessage(chatId, '⚠️ डेटाबेस में अभी प्रश्न तैयार हो रहे हैं। कृपया एडमिन पैनल से +10 सवाल जनरेट करें।');
         }
 
         const q = res.rows[0];
@@ -476,14 +496,16 @@ bot.on('poll_answer', async (ctx) => {
       if (!subCheck.joined) {
         try {
           const buttons: any[][] = subCheck.missing.map(m => [Markup.button.url(m.title, m.link)]);
-          const warnMsg = await bot.telegram.sendMessage(
+          const warnMsg = await safeSendMessage(
             chat_id,
-            `⚠️ **${username}**, आपका उत्तर सही था! लेकिन आपने ऑफिशियल चैनल जॉइन नहीं किया है इसलिए आपका पॉइंट लीडरबोर्ड में नहीं जुड़ा।`,
+            `⚠️ ${username}, आपका उत्तर सही था! लेकिन आपने ऑफिशियल चैनल जॉइन नहीं किया है इसलिए आपका पॉइंट लीडरबोर्ड में नहीं जुड़ा।`,
             Markup.inlineKeyboard(buttons)
           );
-          setTimeout(() => {
-            bot.telegram.deleteMessage(chat_id, warnMsg.message_id).catch(() => {});
-          }, 12000);
+          if (warnMsg && 'message_id' in warnMsg) {
+            setTimeout(() => {
+              bot.telegram.deleteMessage(chat_id, warnMsg.message_id).catch(() => {});
+            }, 12000);
+          }
         } catch {}
         return;
       }
@@ -517,19 +539,19 @@ const notifyUsersAndGroups = async (minutesLeft: number) => {
     for (const ch of channels.rows) {
       const allowed: string[] = ch.selected_subjects || SUBJECTS;
       const activeSub = allowed.includes(subject) ? subject : allowed[0] || 'GENERAL KNOWLEDGE';
-      await bot.telegram.sendMessage(
+      await safeSendMessage(
         ch.chat_id,
-        `⏰ **रिमाइंडर (${minutesLeft} Min Left)!**\n\n📚 विषय: **${activeSub}**\n🔥 50 प्रश्नों का सुपरफास्ट लाइव टेस्ट ठीक **${minutesLeft} मिनट** में शुरू होने जा रहा है! तैयार हो जाइए!`
-      ).catch(() => {});
+        `⏰ *रिमाइंडर (${minutesLeft} Min Left)!*\n\n📚 विषय: *${activeSub}*\n🔥 50 प्रश्नों का सुपरफास्ट लाइव टेस्ट ठीक *${minutesLeft} मिनट* में शुरू होने जा रहा है! तैयार हो जाइए!`
+      );
     }
 
     if (minutesLeft === 10) {
       const users = await pool.query('SELECT telegram_id, first_name FROM users WHERE alerts_enabled = TRUE AND is_banned = FALSE AND $1 = ANY(preferred_subjects)', [subject]);
       for (const u of users.rows) {
-        await bot.telegram.sendMessage(
+        await safeSendMessage(
           u.telegram_id,
-          `🔔 **नमस्ते ${u.first_name || 'Student'}!**\nआपके पसंदीदा विषय **${subject}** का लाइव टेस्ट ठीक 10 मिनट में ग्रुप में शुरू होने वाला है। तुरंत ग्रुप में आ जाएं!`
-        ).catch(() => {});
+          `🔔 *नमस्ते ${u.first_name || 'Student'}!*\nआपके पसंदीदा विषय *${subject}* का लाइव टेस्ट ठीक 10 मिनट में ग्रुप में शुरू होने वाला है। तुरंत ग्रुप में आ जाएं!`
+        );
       }
     }
   } catch (err) {}
@@ -559,6 +581,7 @@ bot.on('my_chat_member', async (ctx) => {
     const status = ctx.myChatMember.new_chat_member.status;
     const chat = ctx.myChatMember.chat;
     const adder = ctx.myChatMember.from;
+    const botUsername = ctx.botInfo?.username || '';
 
     if ((chat.type === 'group' || chat.type === 'supergroup' || chat.type === 'channel') && ['administrator', 'member'].includes(status)) {
       await pool.query(`
@@ -569,22 +592,21 @@ bot.on('my_chat_member', async (ctx) => {
 
       const welcomeKb: any[][] = [
         [Markup.button.callback('▶️ Start Demo Test Now', `start_quiz_${chat.id}`)],
-        [Markup.button.url('⚙️ Configure Group Settings', `[https://t.me/$](https://t.me/$){ctx.botInfo.username}?start=settings`)]
+        [Markup.button.url('⚙️ Configure Group Settings', `[https://t.me/$](https://t.me/$){botUsername}?start=settings`)]
       ];
 
-      await bot.telegram.sendMessage(
+      await safeSendMessage(
         chat.id,
-        `🎉 **धन्यवाद! Smart AI Quiz Bot अब "${chat.title}" से जुड़ चुका है!**\n\n` +
-        `👑 **Group Owner (${adder.first_name}):** आप मेरे प्राइवेट चैट (DM) में जाकर **/mygroups** टाइप करके इस ग्रुप के लिए अपना **Force Subscribe Channel**, **Exam Category** और **Subjects** सेट कर सकते हैं!`,
+        `🎉 *धन्यवाद! Smart AI Quiz Bot अब "${chat.title}" से जुड़ चुका है!*\n\n` +
+        `👑 *Group Owner (${adder.first_name}):* आप मेरे प्राइवेट चैट (DM) में जाकर */mygroups* टाइप करके इस ग्रुप के लिए अपना *Force Subscribe Channel*, *Exam Category* और *Subjects* सेट कर सकते हैं!`,
         Markup.inlineKeyboard(welcomeKb)
-      ).catch(() => {});
+      );
 
       if (ADMIN_ID) {
-        await bot.telegram.sendMessage(
+        await safeSendMessage(
           ADMIN_ID,
-          `🔔 **New Group Added!**\n📌 Title: ${chat.title}\n🆔 Chat ID: \`${chat.id}\`\n👤 Added By: ${adder.first_name} (\`${adder.id}\`)`,
-          { parse_mode: 'Markdown' }
-        ).catch(() => {});
+          `🔔 *New Group Added!*\n📌 Title: ${chat.title}\n🆔 Chat ID: ${chat.id}\n👤 Added By: ${adder.first_name} (${adder.id})`
+        );
       }
     } else if (['left', 'kicked'].includes(status)) {
       await pool.query('UPDATE channels SET is_active = FALSE WHERE chat_id = $1', [chat.id]);
@@ -598,24 +620,25 @@ bot.on('my_chat_member', async (ctx) => {
 // ---------------------------------------------------------
 const sendUserMainMenu = async (ctx: any) => {
   const brandText = await getSetting('branding_text');
-  const text = `🎓 **स्मार्ट AI लाइव क्विज़ प्लेटफॉर्म में आपका स्वागत है!**\n\n` +
-               `यहाँ रोज़ सुबह **8:00 AM से रात 11:00 PM** तक हर घंटे अलग-अलग विषयों के 100% फैक्ट-चेक्ड लाइव टेस्ट होते हैं।\n\n` +
+  const botUsername = ctx.botInfo?.username || '';
+  const text = `🎓 *स्मार्ट AI लाइव क्विज़ प्लेटफॉर्म में आपका स्वागत है!*\n\n` +
+               `यहाँ रोज़ सुबह *8:00 AM से रात 11:00 PM* तक हर घंटे अलग-अलग विषयों के 100% फैक्ट-चेक्ड लाइव टेस्ट होते हैं।\n\n` +
                `नीचे दिए गए बटन्स से अपनी परीक्षा और विषय चुनें ताकि टेस्ट शुरू होने से पहले आपको अलर्ट मिल सके:\n\n${brandText}`;
 
   const buttons: any[][] = [
     [Markup.button.callback('🎯 My Exam & Subject Preferences', 'user_prefs'), Markup.button.callback('⚡ Play Demo Quiz', 'play_demo')],
     [Markup.button.callback('⚙️ Manage My Groups (Group Owners)', 'owner_groups')],
-    [Markup.button.callback('🏆 My Profile & Score', 'user_profile'), Markup.button.url('➕ Add Bot to Your Group', `[https://t.me/$](https://t.me/$){ctx.botInfo.username}?startgroup=true`)]
+    [Markup.button.callback('🏆 My Profile & Score', 'user_profile'), Markup.button.url('➕ Add Bot to Your Group', `[https://t.me/$](https://t.me/$){botUsername}?startgroup=true`)]
   ];
 
-  if (ctx.from.id.toString() === ADMIN_ID) {
+  if (isMasterAdmin(ctx.from.id)) {
     buttons.push([Markup.button.callback('👑 MASTER ADMIN PANEL 👑', 'admin_home')]);
   }
 
   if (ctx.callbackQuery) {
-    return ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }).catch(() => {});
+    return safeEditMessage(ctx, text, Markup.inlineKeyboard(buttons));
   }
-  return ctx.reply(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+  return safeSendMessage(ctx.chat.id, text, Markup.inlineKeyboard(buttons));
 };
 
 bot.start(async (ctx) => {
@@ -628,8 +651,11 @@ bot.start(async (ctx) => {
     const subCheck = await checkUserSubscription(ctx.from.id, ctx.chat.id);
     if (!subCheck.joined) return sendForceSubPrompt(ctx, subCheck.missing);
 
-    return sendUserMainMenu(ctx);
-  } catch (err) {}
+    return await sendUserMainMenu(ctx);
+  } catch (err) {
+    console.error('Start Command Error:', err);
+    return ctx.reply('नमस्ते! बॉट चालू है। मेनू खोलने के लिए /admin या /mygroups दबाएं।');
+  }
 });
 
 bot.action('verify_fsub', async (ctx) => {
@@ -646,18 +672,15 @@ bot.action('user_home', (ctx) => sendUserMainMenu(ctx));
 bot.action('user_profile', async (ctx) => {
   const res = await pool.query('SELECT target_exam, preferred_subjects, alerts_enabled, total_score FROM users WHERE telegram_id = $1', [ctx.from.id]);
   const u = res.rows[0] || {};
-  const msg = `👤 **आपकी प्रोफाइल:**\n\n` +
-              `🏅 कुल स्कोर: **${u.total_score || 0} Points**\n` +
-              `🎯 टारगेट एग्जाम: **${u.target_exam || 'UPSC / UPPSC'}**\n` +
-              `📚 चुने गए विषय: **${(u.preferred_subjects || []).join(', ')}**\n` +
-              `🔔 टेस्ट रिमाइंडर अलर्ट: **${u.alerts_enabled ? 'ON ✅' : 'OFF 🔕'}**`;
-  await ctx.editMessageText(msg, {
-    parse_mode: 'Markdown',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('🎯 Change Exam / Subjects', 'user_prefs')],
-      [Markup.button.callback('🔙 Back to Main Menu', 'user_home')]
-    ])
-  }).catch(() => {});
+  const msg = `👤 *आपकी प्रोफाइल:*\n\n` +
+              `🏅 कुल स्कोर: *${u.total_score || 0} Points*\n` +
+              `🎯 टारगेट एग्जाम: *${u.target_exam || 'UPSC / UPPSC'}*\n` +
+              `📚 चुने गए विषय: *${(u.preferred_subjects || []).join(', ')}*\n` +
+              `🔔 टेस्ट रिमाइंडर अलर्ट: *${u.alerts_enabled ? 'ON ✅' : 'OFF 🔕'}*`;
+  await safeEditMessage(ctx, msg, Markup.inlineKeyboard([
+    [Markup.button.callback('🎯 Change Exam / Subjects', 'user_prefs')],
+    [Markup.button.callback('🔙 Back to Main Menu', 'user_home')]
+  ]));
 });
 
 const renderUserPrefs = async (ctx: any) => {
@@ -678,17 +701,15 @@ const renderUserPrefs = async (ctx: any) => {
   subBtns.push([Markup.button.callback(`🔔 Test Alerts: ${u.alerts_enabled ? 'ON ✅' : 'OFF 🔕'}`, 'utoggle_alerts')]);
   subBtns.push([Markup.button.callback('💾 Save & Back', 'user_home')]);
 
-  await ctx.editMessageText(
-    `🎯 **अपना एग्जाम और पसंदीदा विषय चुनें:**\n*(जब आपके चुने हुए विषय का टेस्ट शुरू होने वाला होगा, तो बॉट आपको 10 मिनट पहले अलर्ट भेजेगा)*`,
-    {
-      parse_mode: 'Markdown',
-      ...Markup.inlineKeyboard([
-        [examBtns[0], examBtns[1]],
-        [examBtns[2], examBtns[3]],
-        ...subBtns
-      ])
-    }
-  ).catch(() => {});
+  await safeEditMessage(
+    ctx,
+    `🎯 *अपना एग्जाम और पसंदीदा विषय चुनें:*\n(जब आपके चुने हुए विषय का टेस्ट शुरू होने वाला होगा, तो बॉट आपको 10 मिनट पहले अलर्ट भेजेगा)`,
+    Markup.inlineKeyboard([
+      [examBtns[0], examBtns[1]],
+      [examBtns[2], examBtns[3]],
+      ...subBtns
+    ])
+  );
 };
 
 bot.action('user_prefs', (ctx) => renderUserPrefs(ctx));
@@ -715,19 +736,29 @@ bot.action('utoggle_alerts', async (ctx) => {
   return renderUserPrefs(ctx);
 });
 
+const sendSingleDemoQuiz = async (ctx: any) => {
+  try {
+    const res = await pool.query('SELECT * FROM questions ORDER BY RANDOM() LIMIT 1');
+    if (res.rows.length === 0) return ctx.reply('⚠️ डेटाबेस में अभी प्रश्न तैयार हो रहे हैं। एडमिन पैनल से +10 सवाल जनरेट करें।');
+    const q = res.rows[0];
+    const options = [q.option_a.substring(0, 95), q.option_b.substring(0, 95), q.option_c.substring(0, 95), q.option_d.substring(0, 95)];
+    const correctIndex = ['A', 'B', 'C', 'D'].indexOf((q.correct_option || 'A').toUpperCase().charAt(0));
+    await ctx.replyWithQuiz(q.question_text.substring(0, 280), options, {
+      correct_option_id: correctIndex !== -1 ? correctIndex : 0,
+      explanation: q.explanation ? q.explanation.substring(0, 190) : '',
+      open_period: 10
+    });
+  } catch (err) {
+    ctx.reply('क्विज़ भेजने में त्रुटि।');
+  }
+};
+
 bot.action('play_demo', async (ctx) => {
   await ctx.answerCbQuery('Sending Quiz...');
-  const res = await pool.query('SELECT * FROM questions ORDER BY RANDOM() LIMIT 1');
-  if (res.rows.length === 0) return ctx.reply('⚠️ डेटाबेस में अभी प्रश्न तैयार हो रहे हैं।');
-  const q = res.rows[0];
-  const options = [q.option_a.substring(0, 95), q.option_b.substring(0, 95), q.option_c.substring(0, 95), q.option_d.substring(0, 95)];
-  const correctIndex = ['A', 'B', 'C', 'D'].indexOf((q.correct_option || 'A').toUpperCase().charAt(0));
-  await ctx.replyWithQuiz(q.question_text.substring(0, 280), options, {
-    correct_option_id: correctIndex !== -1 ? correctIndex : 0,
-    explanation: q.explanation ? q.explanation.substring(0, 190) : '',
-    open_period: 10
-  });
+  return sendSingleDemoQuiz(ctx);
 });
+
+bot.command('quiz', (ctx) => sendSingleDemoQuiz(ctx));
 
 // ---------------------------------------------------------
 // 10. GROUP OWNER MANAGEMENT PANEL (/mygroups & /setupgroup)
@@ -737,7 +768,7 @@ bot.command('setupgroup', async (ctx) => {
   try {
     const admins = await ctx.getChatAdministrators();
     const isAdmin = admins.some(a => a.user.id === ctx.from.id);
-    if (!isAdmin && ctx.from.id.toString() !== ADMIN_ID) {
+    if (!isAdmin && !isMasterAdmin(ctx.from.id)) {
       return ctx.reply('❌ केवल ग्रुप के एडमिन ही यह कमांड चला सकते हैं।');
     }
 
@@ -747,14 +778,16 @@ bot.command('setupgroup', async (ctx) => {
       ON CONFLICT (chat_id) DO UPDATE SET title = $2, owner_id = $3, is_active = TRUE
     `, [ctx.chat.id, ctx.chat.title || 'Group', ctx.from.id]);
 
+    const botUsername = ctx.botInfo?.username || '';
     const setupKb: any[][] = [
       [Markup.button.callback('▶️ Start Live Test', `start_quiz_${ctx.chat.id}`), Markup.button.callback('🛑 Stop Test', `stop_quiz_${ctx.chat.id}`)],
-      [Markup.button.url('⚙️ Customize Group & Force Sub', `[https://t.me/$](https://t.me/$){ctx.botInfo.username}?start=settings`)]
+      [Markup.button.url('⚙️ Customize Group & Force Sub', `[https://t.me/$](https://t.me/$){botUsername}?start=settings`)]
     ];
 
-    ctx.reply(
-      `✅ **"${ctx.chat.title}" सफलतापूर्वक रजिस्टर हो गया है!**\n\n` +
-      `इस ग्रुप में अपना Force Subscribe चैनल, विषय या टेस्ट कंट्रोल करने के लिए बॉट के प्राइवेट चैट में **/mygroups** लिखें या नीचे बटन दबाएं:`,
+    await safeSendMessage(
+      ctx.chat.id,
+      `✅ *"${ctx.chat.title}" सफलतापूर्वक रजिस्टर हो गया है!*\n\n` +
+      `इस ग्रुप में अपना Force Subscribe चैनल, विषय या टेस्ट कंट्रोल करने के लिए बॉट के प्राइवेट चैट में */mygroups* लिखें या नीचे बटन दबाएं:`,
       Markup.inlineKeyboard(setupKb)
     );
   } catch (err) {
@@ -763,16 +796,17 @@ bot.command('setupgroup', async (ctx) => {
 });
 
 const renderOwnerGroups = async (ctx: any) => {
-  const isMaster = ctx.from.id.toString() === ADMIN_ID;
+  const isMaster = isMasterAdmin(ctx.from.id);
   const res = isMaster
     ? await pool.query('SELECT chat_id, title, is_active FROM channels ORDER BY title LIMIT 20')
     : await pool.query('SELECT chat_id, title, is_active FROM channels WHERE owner_id = $1', [ctx.from.id]);
 
   if (res.rows.length === 0) {
-    return ctx.editMessageText(
-      `📢 **आपका कोई ग्रुप लिंक नहीं है!**\n\n1. बॉट को अपने ग्रुप में **Admin** बनाकर जोड़ें।\n2. ग्रुप में जाकर **/setupgroup** टाइप करें।`,
+    return safeEditMessage(
+      ctx,
+      `📢 *आपका कोई ग्रुप लिंक नहीं है!*\n\n1. बॉट को अपने ग्रुप में *Admin* बनाकर जोड़ें।\n2. ग्रुप में जाकर */setupgroup* टाइप करें।`,
       Markup.inlineKeyboard([[Markup.button.callback('🔙 Back', 'user_home')]])
-    ).catch(() => {});
+    );
   }
 
   const btns: any[][] = res.rows.map(g => [
@@ -780,25 +814,26 @@ const renderOwnerGroups = async (ctx: any) => {
   ]);
   btns.push([Markup.button.callback('🔙 Back to Home', 'user_home')]);
 
-  await ctx.editMessageText(
-    `⚙️ **अपने ग्रुप का चयन करें जिसे आप कस्टमाइज़ करना चाहते हैं:**`,
+  await safeEditMessage(
+    ctx,
+    `⚙️ *अपने ग्रुप का चयन करें जिसे आप कस्टमाइज़ करना चाहते हैं:*`,
     Markup.inlineKeyboard(btns)
-  ).catch(() => {});
+  );
 };
 
 bot.command(['mygroups', 'settings'], async (ctx) => {
-  if (ctx.chat.type !== 'private') return ctx.reply('कृपया बॉट के प्राइवेट चैट (DM) में `/mygroups` भेजें।');
-  const isMaster = ctx.from.id.toString() === ADMIN_ID;
+  if (ctx.chat.type !== 'private') return ctx.reply('कृपया बॉट के प्राइवेट चैट (DM) में /mygroups भेजें।');
+  const isMaster = isMasterAdmin(ctx.from.id);
   const res = isMaster
     ? await pool.query('SELECT chat_id, title, is_active FROM channels ORDER BY title LIMIT 20')
     : await pool.query('SELECT chat_id, title, is_active FROM channels WHERE owner_id = $1', [ctx.from.id]);
 
   if (res.rows.length === 0) {
-    return ctx.reply('आपका कोई ग्रुप रजिस्टर नहीं है। बॉट को अपने ग्रुप में Admin बनाएं और वहां `/setupgroup` लिखें।');
+    return ctx.reply('आपका कोई ग्रुप रजिस्टर नहीं है। बॉट को अपने ग्रुप में Admin बनाएं और वहां /setupgroup लिखें।');
   }
   const btns: any[][] = res.rows.map(g => [Markup.button.callback(`${g.is_active ? '🟢' : '🔴'} ${g.title}`, `manage_grp_${g.chat_id}`)]);
   btns.push([Markup.button.callback('🔙 Main Menu', 'user_home')]);
-  ctx.reply('⚙️ **अपने ग्रुप को मैनेज करने के लिए उस पर क्लिक करें:**', Markup.inlineKeyboard(btns));
+  await safeSendMessage(ctx.chat.id, '⚙️ *अपने ग्रुप को मैनेज करने के लिए उस पर क्लिक करें:*', Markup.inlineKeyboard(btns));
 });
 
 bot.action('owner_groups', (ctx) => renderOwnerGroups(ctx));
@@ -809,14 +844,14 @@ const renderSingleGroupControl = async (ctx: any, chatId: number) => {
   const g = res.rows[0];
   const isRunning = activeTests.has(Number(chatId));
 
-  const text = `⚙️ **Group Control Panel: ${g.title}**\n\n` +
-               `🆔 Chat ID: \`${g.chat_id}\`\n` +
-               `📡 Auto-Schedule (8AM-11PM): **${g.is_active ? 'ACTIVE 🟢' : 'PAUSED 🔴'}**\n` +
-               `🔥 Live Quiz right now: **${isRunning ? 'RUNNING ⚡' : 'IDLE 💤'}**\n` +
-               `🎯 Exam Focus: **${g.exam_pref}**\n` +
-               `🎚 Difficulty Mode: **${g.difficulty_mode}**\n` +
-               `🔐 Group Force Sub: **${g.force_sub_id ? `${g.force_sub_id} ✅` : 'Not Set ❌'}**\n` +
-               `📚 Active Subjects: **${(g.selected_subjects || []).length}/13 Selected**`;
+  const text = `⚙️ *Group Control Panel: ${g.title}*\n\n` +
+               `🆔 Chat ID: ${g.chat_id}\n` +
+               `📡 Auto-Schedule (8AM-11PM): *${g.is_active ? 'ACTIVE 🟢' : 'PAUSED 🔴'}*\n` +
+               `🔥 Live Quiz right now: *${isRunning ? 'RUNNING ⚡' : 'IDLE 💤'}*\n` +
+               `🎯 Exam Focus: *${g.exam_pref}*\n` +
+               `🎚 Difficulty Mode: *${g.difficulty_mode}*\n` +
+               `🔐 Group Force Sub: *${g.force_sub_id ? `${g.force_sub_id} ✅` : 'Not Set ❌'}*\n` +
+               `📚 Active Subjects: *${(g.selected_subjects || []).length}/13 Selected*`;
 
   const btns: any[][] = [
     [
@@ -835,7 +870,7 @@ const renderSingleGroupControl = async (ctx: any, chatId: number) => {
     [Markup.button.callback('🔙 Back to My Groups', 'owner_groups')]
   ];
 
-  await ctx.editMessageText(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(btns) }).catch(() => {});
+  await safeEditMessage(ctx, text, Markup.inlineKeyboard(btns));
 };
 
 bot.action(/^manage_grp_(-?\d+)$/, (ctx) => renderSingleGroupControl(ctx, Number(ctx.match[1])));
@@ -885,7 +920,7 @@ const renderGroupSubjects = async (ctx: any, chatId: number) => {
     subBtns.push(row);
   }
   subBtns.push([Markup.button.callback('💾 Save & Back', `manage_grp_${chatId}`)]);
-  await ctx.editMessageText(`📚 **${res.rows[0]?.title} के लिए विषय चुनें:**`, Markup.inlineKeyboard(subBtns)).catch(() => {});
+  await safeEditMessage(ctx, `📚 *${res.rows[0]?.title} के लिए विषय चुनें:*`, Markup.inlineKeyboard(subBtns));
 };
 
 bot.action(/^gsub_menu_(-?\d+)$/, (ctx) => renderGroupSubjects(ctx, Number(ctx.match[1])));
@@ -904,12 +939,12 @@ bot.action(/^gtogsub_(-?\d+)_(.+)$/, async (ctx) => {
 bot.action(/^gfsub_set_(-?\d+)$/, async (ctx) => {
   const chatId = Number(ctx.match[1]);
   userStates.set(ctx.from.id, { action: 'SET_GROUP_FSUB', targetChatId: chatId });
-  await ctx.reply(
-    `🔐 **Easy Force Subscribe Setup:**\n\n` +
-    `1. सबसे पहले इस बॉट को अपने उस चैनल/ग्रुप में **Admin** बनाएं जिसे आप सब्सक्राइब करवाना चाहते हैं।\n` +
-    `2. अब यहाँ अपने चैनल का **@username** लिखकर भेजें (जैसे: \`@MyOfficialChannel\`) **या** अपने चैनल की कोई भी एक पोस्ट यहाँ **Forward** कर दें!\n\n` +
-    `*(कैंसिल करने के लिए /cancel लिखें)*`,
-    { parse_mode: 'Markdown' }
+  await safeSendMessage(
+    ctx.chat.id,
+    `🔐 *Easy Force Subscribe Setup:*\n\n` +
+    `1. सबसे पहले इस बॉट को अपने उस चैनल/ग्रुप में *Admin* बनाएं जिसे आप सब्सक्राइब करवाना चाहते हैं।\n` +
+    `2. अब यहाँ अपने चैनल का *@username* लिखकर भेजें (जैसे: @MyOfficialChannel) *या* अपने चैनल की कोई भी एक पोस्ट यहाँ *Forward* कर दें!\n\n` +
+    `(कैंसिल करने के लिए /cancel लिखें)`
   );
 });
 
@@ -924,7 +959,9 @@ bot.action(/^gfsub_clr_(-?\d+)$/, async (ctx) => {
 // 11. MASTER ADMIN PANEL (/admin) - FULL CONTROL
 // ---------------------------------------------------------
 const renderMasterAdmin = async (ctx: any) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) {
+    return ctx.reply(`❌ एक्सेस डिनाइड! आपकी Telegram ID ${ctx.from.id} है। कृपया Render के Environment में ADMIN_ID में यही नंबर सेट करें।`);
+  }
 
   const uCount = await pool.query('SELECT COUNT(*) FROM users');
   const bCount = await pool.query('SELECT COUNT(*) FROM users WHERE is_banned = TRUE');
@@ -936,13 +973,13 @@ const renderMasterAdmin = async (ctx: any) => {
   const factoryOn = await getSetting('factory_on');
   const brandText = await getSetting('branding_text');
 
-  const dashboard = `👑 **SUPER ADMIN MASTER PANEL** 👑\n\n` +
-                    `👥 **Total Users:** ${uCount.rows[0].count} (🚫 Banned: ${bCount.rows[0].count})\n` +
-                    `📢 **Active Groups/Channels:** ${cCount.rows[0].count}\n` +
-                    `📚 **Total Verified Questions:** ${qCount.rows[0].count}\n` +
-                    `⚙️ **AI Question Factory:** ${factoryOn === 'true' ? 'RUNNING 🟢' : 'PAUSED 🔴'}\n` +
-                    `🔐 **Master Force Sub:** ${fsubOn === 'true' ? `ON 🟢 (${fsubId || 'Not Set'})` : 'OFF 🔴'}\n` +
-                    `🏷 **Smart Branding:** ${brandText}`;
+  const dashboard = `👑 *SUPER ADMIN MASTER PANEL* 👑\n\n` +
+                    `👥 *Total Users:* ${uCount.rows[0].count} (🚫 Banned: ${bCount.rows[0].count})\n` +
+                    `📢 *Active Groups/Channels:* ${cCount.rows[0].count}\n` +
+                    `📚 *Total Verified Questions:* ${qCount.rows[0].count}\n` +
+                    `⚙️ *AI Question Factory:* ${factoryOn === 'true' ? 'RUNNING 🟢' : 'PAUSED 🔴'}\n` +
+                    `🔐 *Master Force Sub:* ${fsubOn === 'true' ? `ON 🟢 (${fsubId || 'Not Set'})` : 'OFF 🔴'}\n` +
+                    `🏷 *Smart Branding:* ${brandText}`;
 
   const buttons: any[][] = [
     [Markup.button.callback('📢 Broadcast (No Pin)', 'adm_bc_normal'), Markup.button.callback('📌 Broadcast & Auto-Pin', 'adm_bc_pin')],
@@ -954,16 +991,16 @@ const renderMasterAdmin = async (ctx: any) => {
   ];
 
   if (ctx.callbackQuery) {
-    return ctx.editMessageText(dashboard, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) }).catch(() => {});
+    return safeEditMessage(ctx, dashboard, Markup.inlineKeyboard(buttons));
   }
-  return ctx.reply(dashboard, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+  return safeSendMessage(ctx.chat.id, dashboard, Markup.inlineKeyboard(buttons));
 };
 
 bot.command('admin', (ctx) => renderMasterAdmin(ctx));
 bot.action('admin_home', (ctx) => renderMasterAdmin(ctx));
 
 bot.action('adm_toggle_factory', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   const curr = await getSetting('factory_on');
   await setSetting('factory_on', curr === 'true' ? 'false' : 'true');
   await ctx.answerCbQuery('AI Factory Status Updated!');
@@ -971,7 +1008,7 @@ bot.action('adm_toggle_factory', async (ctx) => {
 });
 
 bot.action('adm_toggle_fsub', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   const curr = await getSetting('master_fsub_on');
   await setSetting('master_fsub_on', curr === 'true' ? 'false' : 'true');
   await ctx.answerCbQuery('Master Force Sub Status Updated!');
@@ -979,20 +1016,20 @@ bot.action('adm_toggle_fsub', async (ctx) => {
 });
 
 bot.action('adm_gen_now', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   await ctx.answerCbQuery('Generating 10 Questions with Gemini...');
-  await ctx.reply('⚙️ **Gemini AI से 10 नए सवाल बनाए जा रहे हैं... कृपया 10 सेकंड प्रतीक्षा करें ⏳**', { parse_mode: 'Markdown' });
+  await safeSendMessage(ctx.chat.id, '⚙️ *Gemini AI से 10 नए सवाल बनाए जा रहे हैं... कृपया 10 सेकंड प्रतीक्षा करें ⏳*');
   const res = await generateBatchQuestions();
   if (res.success) {
-    await ctx.reply(`✅ **सफलता!** विषय **${res.subject}** के **${res.count}** नए प्रश्न डेटाबेस में जुड़ गए!`);
+    await safeSendMessage(ctx.chat.id, `✅ *सफलता!* विषय *${res.subject}* के *${res.count}* नए प्रश्न डेटाबेस में जुड़ गए!`);
   } else {
-    await ctx.reply(`❌ सवाल जनरेट नहीं हो पाए। कृपया अपनी GEMINI_API_KEY चेक करें।`);
+    await safeSendMessage(ctx.chat.id, `❌ सवाल जनरेट नहीं हो पाए। कृपया अपनी GEMINI_API_KEY चेक करें।`);
   }
   return renderMasterAdmin(ctx);
 });
 
 bot.action('adm_force_all', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   const subject = getHourlySubject();
   const chs = await pool.query('SELECT chat_id FROM channels WHERE is_active = TRUE AND is_blacklisted = FALSE');
   for (const ch of chs.rows) {
@@ -1002,7 +1039,7 @@ bot.action('adm_force_all', async (ctx) => {
 });
 
 bot.action('adm_stop_all', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   for (const chatId of Array.from(activeTests.keys())) {
     await stopQuizInChat(chatId, true);
   }
@@ -1010,43 +1047,44 @@ bot.action('adm_stop_all', async (ctx) => {
 });
 
 bot.action('adm_sub_stats', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   const res = await pool.query('SELECT subject, COUNT(*) as cnt FROM questions GROUP BY subject ORDER BY cnt DESC');
-  const lines = res.rows.map(r => `• **${r.subject}:** ${r.cnt} Qs`).join('\n');
-  await ctx.editMessageText(
-    `📊 **Subject-wise Question Bank:**\n\n${lines || 'अभी कोई सवाल नहीं है।'}`,
-    { parse_mode: 'Markdown', ...Markup.inlineKeyboard([[Markup.button.callback('🔙 Back to Admin', 'admin_home')]]) }
-  ).catch(() => {});
+  const lines = res.rows.map(r => `• *${r.subject}:* ${r.cnt} Qs`).join('\n');
+  await safeEditMessage(
+    ctx,
+    `📊 *Subject-wise Question Bank:*\n\n${lines || 'अभी कोई सवाल नहीं है।'}`,
+    Markup.inlineKeyboard([[Markup.button.callback('🔙 Back to Admin', 'admin_home')]])
+  );
 });
 
 bot.action('adm_bc_normal', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   userStates.set(ctx.from.id, { action: 'ADM_BC_NORMAL' });
-  await ctx.reply('📢 **Broadcast Mode (Without Pin):**\nअब आप जो भी मैसेज, फोटो, वीडियो या पोल भेजेंगे, वह सभी यूज़र्स और ग्रुप्स में चला जाएगा।\n*(कैंसिल करने के लिए /cancel लिखें)*');
+  await ctx.reply('📢 Broadcast Mode (Without Pin):\nअब आप जो भी मैसेज, फोटो, वीडियो या पोल भेजेंगे, वह सभी यूज़र्स और ग्रुप्स में चला जाएगा।\n(कैंसिल करने के लिए /cancel लिखें)');
 });
 
 bot.action('adm_bc_pin', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   userStates.set(ctx.from.id, { action: 'ADM_BC_PIN' });
-  await ctx.reply('📌 **Broadcast & Auto-Pin Mode:**\nअब आप जो भी मैसेज या पोस्ट भेजेंगे, वह सभी यूज़र्स और ग्रुप्स में जाएगा और सभी ग्रुप्स में ऊपर **Pin** भी हो जाएगा!\n*(कैंसिल करने के लिए /cancel लिखें)*');
+  await ctx.reply('📌 Broadcast & Auto-Pin Mode:\nअब आप जो भी मैसेज या पोस्ट भेजेंगे, वह सभी यूज़र्स और ग्रुप्स में जाएगा और सभी ग्रुप्स में ऊपर Pin भी हो जाएगा!\n(कैंसिल करने के लिए /cancel लिखें)');
 });
 
 bot.action('adm_set_fsub', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   userStates.set(ctx.from.id, { action: 'ADM_SET_FSUB' });
-  await ctx.reply('🔐 **Master Force Subscribe Setup:**\nअपने मुख्य चैनल में बॉट को Admin बनाएं और यहाँ चैनल का `@username` भेजें या चैनल से कोई भी एक पोस्ट यहाँ **Forward** करें:\n*(कैंसिल करने के लिए /cancel लिखें)*');
+  await ctx.reply('🔐 Master Force Subscribe Setup:\nअपने मुख्य चैनल में बॉट को Admin बनाएं और यहाँ चैनल का @username भेजें या चैनल से कोई भी एक पोस्ट यहाँ Forward करें:\n(कैंसिल करने के लिए /cancel लिखें)');
 });
 
 bot.action('adm_set_brand', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   userStates.set(ctx.from.id, { action: 'ADM_SET_BRAND' });
-  await ctx.reply('🏷 **Smart Branding Setup:**\nअपना ब्रांडिंग टेक्स्ट और लिंक `|` लगाकर इस तरह भेजें:\n\nउदाहरण:\n`🎯 Join @MyChannel | [https://t.me/MyChannel](https://t.me/MyChannel)`\n\n*(कैंसिल करने के लिए /cancel लिखें)*', { parse_mode: 'Markdown' });
+  await ctx.reply('🏷 Smart Branding Setup:\nअपना ब्रांडिंग टेक्स्ट और लिंक | लगाकर इस तरह भेजें:\n\nउदाहरण:\n🎯 Join @MyChannel | [https://t.me/MyChannel](https://t.me/MyChannel)\n\n(कैंसिल करने के लिए /cancel लिखें)');
 });
 
 bot.action('adm_ban_user', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   userStates.set(ctx.from.id, { action: 'ADM_BAN_TOGGLE' });
-  await ctx.reply('🚫 **Ban / Unban User:**\nजिस यूज़र को Ban या Unban करना है, उसकी **Telegram User ID** भेजें:\n*(कैंसिल करने के लिए /cancel लिखें)*');
+  await ctx.reply('🚫 Ban / Unban User:\nजिस यूज़र को Ban या Unban करना है, उसकी Telegram User ID भेजें:\n(कैंसिल करने के लिए /cancel लिखें)');
 });
 
 bot.command('cancel', (ctx) => {
@@ -1065,7 +1103,7 @@ bot.on('message', async (ctx) => {
     const shouldPin = state.action === 'ADM_BC_PIN';
     userStates.delete(ctx.from.id);
 
-    await ctx.reply('🚀 **ब्रॉडकास्ट शुरू हो गया है...**');
+    await ctx.reply('🚀 ब्रॉडकास्ट शुरू हो गया है...');
     const users = await pool.query('SELECT telegram_id FROM users WHERE is_banned = FALSE');
     const groups = await pool.query('SELECT chat_id FROM channels WHERE is_active = TRUE AND is_blacklisted = FALSE');
 
@@ -1089,7 +1127,7 @@ bot.on('message', async (ctx) => {
       } catch {}
     }
 
-    return ctx.reply(`✅ **Broadcast Complete!**\n\n👤 Users Reached: ${uSent}\n📢 Groups Reached: ${gSent}\n📌 Pinned in Groups: ${pinned}`);
+    return ctx.reply(`✅ Broadcast Complete!\n\n👤 Users Reached: ${uSent}\n📢 Groups Reached: ${gSent}\n📌 Pinned in Groups: ${pinned}`);
   }
 
   if (state.action === 'ADM_SET_FSUB' || state.action === 'SET_GROUP_FSUB') {
@@ -1106,20 +1144,20 @@ bot.on('message', async (ctx) => {
       targetChannelId = msg.text.trim();
       targetInviteLink = `[https://t.me/$](https://t.me/$){targetChannelId.replace('@', '')}`;
     } else {
-      return ctx.reply('❌ कृपया चैनल का `@username` भेजें या चैनल से कोई पोस्ट यहाँ Forward करें (या /cancel लिखें)।');
+      return ctx.reply('❌ कृपया चैनल का @username भेजें या चैनल से कोई पोस्ट यहाँ Forward करें (या /cancel लिखें)।');
     }
 
     try {
       const botMember = await ctx.telegram.getChatMember(targetChannelId, ctx.botInfo.id);
       if (botMember.status !== 'administrator') {
-        return ctx.reply('⚠️ **बॉट उस चैनल में Admin नहीं है!** कृपया पहले बॉट को अपने चैनल में Admin बनाएं और फिर दोबारा कोशिश करें।');
+        return ctx.reply('⚠️ बॉट उस चैनल में Admin नहीं है! कृपया पहले बॉट को अपने चैनल में Admin बनाएं और फिर दोबारा कोशिश करें।');
       }
       if (!targetInviteLink) {
         const chatInfo: any = await ctx.telegram.getChat(targetChannelId);
         targetInviteLink = chatInfo.invite_link || (await ctx.telegram.exportChatInviteLink(targetChannelId));
       }
     } catch (err) {
-      return ctx.reply('❌ बॉट उस चैनल को एक्सेस नहीं कर पा रहा है! कृपया पहले बॉट को चैनल में **Admin** बनाएं।');
+      return ctx.reply('❌ बॉट उस चैनल को एक्सेस नहीं कर पा रहा है! कृपया पहले बॉट को चैनल में Admin बनाएं।');
     }
 
     if (state.action === 'ADM_SET_FSUB') {
@@ -1127,12 +1165,12 @@ bot.on('message', async (ctx) => {
       await setSetting('master_fsub_link', targetInviteLink);
       await setSetting('master_fsub_on', 'true');
       userStates.delete(ctx.from.id);
-      await ctx.reply(`✅ **Master Force Subscribe सफलतापूर्वक सेट हो गया!**\nChannel: ${targetChannelId}\nLink: ${targetInviteLink}`);
+      await ctx.reply(`✅ Master Force Subscribe सफलतापूर्वक सेट हो गया!\nChannel: ${targetChannelId}\nLink: ${targetInviteLink}`);
       return renderMasterAdmin(ctx);
     } else if (state.action === 'SET_GROUP_FSUB' && state.targetChatId) {
       await pool.query('UPDATE channels SET force_sub_id = $1, force_sub_link = $2 WHERE chat_id = $3', [targetChannelId, targetInviteLink, state.targetChatId]);
       userStates.delete(ctx.from.id);
-      await ctx.reply(`✅ **आपके ग्रुप के लिए Force Subscribe सेट हो गया!**\nChannel: ${targetChannelId}\nLink: ${targetInviteLink}`);
+      await ctx.reply(`✅ आपके ग्रुप के लिए Force Subscribe सेट हो गया!\nChannel: ${targetChannelId}\nLink: ${targetInviteLink}`);
       return renderSingleGroupControl(ctx, state.targetChatId);
     }
   }
@@ -1144,7 +1182,7 @@ bot.on('message', async (ctx) => {
     await setSetting('branding_text', bText);
     await setSetting('branding_link', bLink);
     userStates.delete(ctx.from.id);
-    await ctx.reply(`✅ **Smart Branding Updated!**\nText: ${bText}\nLink: ${bLink}`);
+    await ctx.reply(`✅ Smart Branding Updated!\nText: ${bText}\nLink: ${bLink}`);
     return renderMasterAdmin(ctx);
   }
 
@@ -1155,20 +1193,17 @@ bot.on('message', async (ctx) => {
     if (check.rows.length === 0) {
       await pool.query('INSERT INTO users (telegram_id, username, is_banned) VALUES ($1, $2, TRUE)', [targetId, 'BannedUser']);
       userStates.delete(ctx.from.id);
-      return ctx.reply(`🚫 User \`${targetId}\` को **BAN** कर दिया गया है!`, { parse_mode: 'Markdown' });
+      return ctx.reply(`🚫 User ${targetId} को BAN कर दिया गया है!`);
     }
     const newBanState = !check.rows[0].is_banned;
     await pool.query('UPDATE users SET is_banned = $1 WHERE telegram_id = $2', [newBanState, targetId]);
     userStates.delete(ctx.from.id);
-    return ctx.reply(
-      newBanState ? `🚫 User \`${targetId}\` को **BAN** कर दिया गया है!` : `✅ User \`${targetId}\` को **UNBAN** कर दिया गया है!`,
-      { parse_mode: 'Markdown' }
-    );
+    return ctx.reply(newBanState ? `🚫 User ${targetId} को BAN कर दिया गया है!` : `✅ User ${targetId} को UNBAN कर दिया गया है!`);
   }
 });
 
 bot.command('forcepost', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) return;
+  if (!isMasterAdmin(ctx.from.id)) return;
   const subject = getHourlySubject();
   const chs = await pool.query('SELECT chat_id FROM channels WHERE is_active = TRUE AND is_blacklisted = FALSE');
   for (const ch of chs.rows) startFastQuiz(Number(ch.chat_id), subject, 50);
@@ -1176,16 +1211,27 @@ bot.command('forcepost', async (ctx) => {
 });
 
 bot.command('leaderboard', async (ctx) => {
-  await sendLeaderboard(ctx.chat.id, '📊 **CURRENT GROUP LEADERBOARD**');
+  await sendLeaderboard(ctx.chat.id, '📊 *CURRENT GROUP LEADERBOARD*');
 });
 
 // ---------------------------------------------------------
-// 13. LAUNCH BOT SAFELY
+// 13. SELF-HEALING BOT LAUNCHER (PREVENTS 409 CONFLICT FREEZE)
 // ---------------------------------------------------------
-bot.launch({ dropPendingUpdates: true }).then(() => {
-  console.log('🚀 Ultimate Enterprise AI Quiz SaaS Bot is Live!');
-  generateBatchQuestions();
-});
+const startBotWithRetry = async () => {
+  try {
+    console.log('🔄 Connecting to Telegram Polling...');
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+    // Telegraf v4 में bot.launch() पोलिंग के दौरान चालू रहता है, इसलिए AI जनरेशन पहले ट्रिगर करें
+    setTimeout(() => { generateBatchQuestions(); }, 5000);
+    await bot.launch({ dropPendingUpdates: true });
+  } catch (err: any) {
+    console.error('⚠️ Telegram Polling Conflict/Error (Auto-Retrying in 6s):', err?.message || err);
+    setTimeout(startBotWithRetry, 6000);
+  }
+};
+
+// डिप्लॉयमेंट के दौरान पुराने कंटेनर को बंद होने के लिए 4 सेकंड का समय दें
+setTimeout(startBotWithRetry, 4000);
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
