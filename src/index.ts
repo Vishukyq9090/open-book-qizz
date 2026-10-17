@@ -36,7 +36,6 @@ const SUBJECTS = [
 
 const EXAMS = ["UPSC / UPPSC", "SSC / Railway", "Teaching / TET", "All Exams Mixed"];
 
-// रनिंग टेस्ट और एडमिन के इनपुट स्टेट्स को ट्रैक करने के लिए
 const activeTests = new Map<number, NodeJS.Timeout>();
 const userStates = new Map<number, { action: string; targetChatId?: number }>();
 
@@ -142,7 +141,6 @@ const setupDatabase = async () => {
 };
 setupDatabase();
 
-// Helper: Settings Getter & Setter
 const getSetting = async (key: string): Promise<string> => {
   try {
     const res = await pool.query('SELECT value FROM bot_settings WHERE key = $1', [key]);
@@ -179,9 +177,7 @@ const checkUserSubscription = async (userId: number, chatId?: number): Promise<{
       if (['left', 'kicked'].includes(member.status)) {
         missing.push({ title: '📢 Join Main Official Channel', link: masterLink });
       }
-    } catch (err) {
-      // अगर बॉट चैनल में एडमिन नहीं है, तो एरर इग्नोर करके आगे बढ़ेगा (Zero Crash)
-    }
+    } catch (err) {}
   }
 
   // Layer 2: Group Owner Local Force Subscribe
@@ -202,8 +198,9 @@ const checkUserSubscription = async (userId: number, chatId?: number): Promise<{
   return { joined: missing.length === 0, missing };
 };
 
+// FIXED TYPESCRIPT ARRAY TYPING HERE (any[][])
 const sendForceSubPrompt = async (ctx: any, missing: { title: string; link: string }[]) => {
-  const buttons = missing.map(m => [Markup.button.url(m.title, m.link)]);
+  const buttons: any[][] = missing.map(m => [Markup.button.url(m.title, m.link)]);
   buttons.push([Markup.button.callback('✅ मैंने जॉइन कर लिया (Verify)', 'verify_fsub')]);
   return ctx.reply(
     `🔒 **एक्सेस लॉक्ड!**\n\nक्विज़ खेलने, अपना स्कोर सेव करने और सभी फीचर्स अनलॉक करने के लिए कृपया नीचे दिए गए ऑफिशियल चैनल जॉइन करें:`,
@@ -211,7 +208,6 @@ const sendForceSubPrompt = async (ctx: any, missing: { title: string; link: stri
   );
 };
 
-// Global Ban Middleware
 bot.use(async (ctx, next) => {
   if (ctx.from && await isUserBanned(ctx.from.id)) {
     if (ctx.chat?.type === 'private') {
@@ -303,7 +299,6 @@ const generateBatchQuestions = async (forcedSubject?: string) => {
   }
 };
 
-// हर 10 मिनट में 10 सवाल ऑटो-सेव (दिन में 1440 सवाल)
 cron.schedule('*/10 * * * *', () => { generateBatchQuestions(); });
 
 // ---------------------------------------------------------
@@ -338,17 +333,15 @@ const sendLeaderboard = async (chatId: number, headerText: string) => {
     }
     board += `\n${brandText}`;
 
-    await bot.telegram.sendMessage(
-      chatId,
-      board,
-      {
-        parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.url('🔥 Join Official Channel', brandLink || '[https://t.me/telegram](https://t.me/telegram)')],
-          [Markup.button.url('➕ Add Bot to Your Group', `[https://t.me/$](https://t.me/$){botUsername}?startgroup=true`)]
-        ])
-      }
-    );
+    const kb: any[][] = [
+      [Markup.button.url('🔥 Join Official Channel', brandLink.startsWith('http') ? brandLink : '[https://t.me/telegram](https://t.me/telegram)')],
+      [Markup.button.url('➕ Add Bot to Your Group', `[https://t.me/$](https://t.me/$){botUsername}?startgroup=true`)]
+    ];
+
+    await bot.telegram.sendMessage(chatId, board, {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard(kb)
+    });
   } catch (err) {}
 };
 
@@ -363,6 +356,13 @@ const startFastQuiz = async (chatId: number, subject: string, totalQuestions: nu
     const brandText = await getSetting('branding_text');
     const brandLink = await getSetting('branding_link');
 
+    const startKb: any[][] = [
+      [
+        Markup.button.url('📢 Official Channel', brandLink.startsWith('http') ? brandLink : '[https://t.me/telegram](https://t.me/telegram)'),
+        Markup.button.callback('🛑 Stop Test', `stop_quiz_${chatId}`)
+      ]
+    ];
+
     await bot.telegram.sendMessage(
       chatId,
       `🚀 **${subject} का लाइव टेस्ट शुरू हो गया है!** 🚀\n\n` +
@@ -372,9 +372,7 @@ const startFastQuiz = async (chatId: number, subject: string, totalQuestions: nu
       `${brandText}`,
       {
         parse_mode: 'Markdown',
-        ...Markup.inlineKeyboard([
-          [Markup.button.url('📢 Official Channel', brandLink || '[https://t.me/telegram](https://t.me/telegram)'), Markup.button.callback('🛑 Stop Test', `stop_quiz_${chatId}`)]
-        ])
+        ...Markup.inlineKeyboard(startKb)
       }
     );
 
@@ -387,7 +385,6 @@ const startFastQuiz = async (chatId: number, subject: string, totalQuestions: nu
         return;
       }
 
-      // 3-Part Difficulty Selection (1-15 Easy, 16-35 Moderate, 36-50 Hard)
       let targetDiff = diffMode;
       if (diffMode === 'Progressive') {
         const ratio = currentQ / totalQuestions;
@@ -413,7 +410,6 @@ const startFastQuiz = async (chatId: number, subject: string, totalQuestions: nu
           `, [`%${subject}%`, chatId]);
         }
 
-        // Auto-Repeat Reset if all questions of this subject were asked
         if (res.rows.length === 0) {
           await pool.query(`DELETE FROM asked_history WHERE chat_id = $1 AND question_id IN (SELECT id FROM questions WHERE subject ILIKE $2)`, [chatId, `%${subject}%`]);
           res = await pool.query(`SELECT * FROM questions WHERE subject ILIKE $1 ORDER BY RANDOM() LIMIT 1`, [`%${subject}%`]);
@@ -458,13 +454,12 @@ const startFastQuiz = async (chatId: number, subject: string, totalQuestions: nu
       } catch (err) {
         console.error('Quiz Send Error:', err);
       }
-    }, 15000); // 10s Poll + 5s Buffer
+    }, 15000);
 
     activeTests.set(chatId, timer);
   } catch (err) {}
 };
 
-// Poll Answer Listener (Live Scoring + Dual Force Sub Enforcement)
 bot.on('poll_answer', async (ctx) => {
   try {
     const answer = ctx.pollAnswer;
@@ -477,11 +472,10 @@ bot.on('poll_answer', async (ctx) => {
 
     const { chat_id, correct_index } = pollRes.rows[0];
     if (selectedOption === correct_index) {
-      // Check Dual-Layer Force Subscribe before saving score
       const subCheck = await checkUserSubscription(userId, Number(chat_id));
       if (!subCheck.joined) {
         try {
-          const buttons = subCheck.missing.map(m => [Markup.button.url(m.title, m.link)]);
+          const buttons: any[][] = subCheck.missing.map(m => [Markup.button.url(m.title, m.link)]);
           const warnMsg = await bot.telegram.sendMessage(
             chat_id,
             `⚠️ **${username}**, आपका उत्तर सही था! लेकिन आपने ऑफिशियल चैनल जॉइन नहीं किया है इसलिए आपका पॉइंट लीडरबोर्ड में नहीं जुड़ा।`,
@@ -513,7 +507,7 @@ const getHourlySubject = (): string => {
   const hour = istTime.getUTCHours();
   const index = hour - 8;
   if (index >= 0 && index < SUBJECTS.length) return SUBJECTS[index];
-  return SUBJECTS[hour % SUBJECTS.length]; // Mixed/Fallback for remaining hours
+  return SUBJECTS[hour % SUBJECTS.length];
 };
 
 const notifyUsersAndGroups = async (minutesLeft: number) => {
@@ -529,7 +523,6 @@ const notifyUsersAndGroups = async (minutesLeft: number) => {
       ).catch(() => {});
     }
 
-    // Personal DM Alert on 10-Min mark to users who selected this subject
     if (minutesLeft === 10) {
       const users = await pool.query('SELECT telegram_id, first_name FROM users WHERE alerts_enabled = TRUE AND is_banned = FALSE AND $1 = ANY(preferred_subjects)', [subject]);
       for (const u of users.rows) {
@@ -574,14 +567,16 @@ bot.on('my_chat_member', async (ctx) => {
         ON CONFLICT (chat_id) DO UPDATE SET title = $2, is_active = TRUE
       `, [chat.id, chat.title || 'Untitled Chat', adder.id]);
 
+      const welcomeKb: any[][] = [
+        [Markup.button.callback('▶️ Start Demo Test Now', `start_quiz_${chat.id}`)],
+        [Markup.button.url('⚙️ Configure Group Settings', `[https://t.me/$](https://t.me/$){ctx.botInfo.username}?start=settings`)]
+      ];
+
       await bot.telegram.sendMessage(
         chat.id,
         `🎉 **धन्यवाद! Smart AI Quiz Bot अब "${chat.title}" से जुड़ चुका है!**\n\n` +
         `👑 **Group Owner (${adder.first_name}):** आप मेरे प्राइवेट चैट (DM) में जाकर **/mygroups** टाइप करके इस ग्रुप के लिए अपना **Force Subscribe Channel**, **Exam Category** और **Subjects** सेट कर सकते हैं!`,
-        Markup.inlineKeyboard([
-          [Markup.button.callback('▶️ Start Demo Test Now', `start_quiz_${chat.id}`)],
-          [Markup.button.url('⚙️ Configure Group Settings', `[https://t.me/$](https://t.me/$){ctx.botInfo.username}?start=settings`)]
-        ])
+        Markup.inlineKeyboard(welcomeKb)
       ).catch(() => {});
 
       if (ADMIN_ID) {
@@ -607,7 +602,7 @@ const sendUserMainMenu = async (ctx: any) => {
                `यहाँ रोज़ सुबह **8:00 AM से रात 11:00 PM** तक हर घंटे अलग-अलग विषयों के 100% फैक्ट-चेक्ड लाइव टेस्ट होते हैं।\n\n` +
                `नीचे दिए गए बटन्स से अपनी परीक्षा और विषय चुनें ताकि टेस्ट शुरू होने से पहले आपको अलर्ट मिल सके:\n\n${brandText}`;
 
-  const buttons = [
+  const buttons: any[][] = [
     [Markup.button.callback('🎯 My Exam & Subject Preferences', 'user_prefs'), Markup.button.callback('⚡ Play Demo Quiz', 'play_demo')],
     [Markup.button.callback('⚙️ Manage My Groups (Group Owners)', 'owner_groups')],
     [Markup.button.callback('🏆 My Profile & Score', 'user_profile'), Markup.button.url('➕ Add Bot to Your Group', `[https://t.me/$](https://t.me/$){ctx.botInfo.username}?startgroup=true`)]
@@ -648,7 +643,6 @@ bot.action('verify_fsub', async (ctx) => {
 
 bot.action('user_home', (ctx) => sendUserMainMenu(ctx));
 
-// User Profile
 bot.action('user_profile', async (ctx) => {
   const res = await pool.query('SELECT target_exam, preferred_subjects, alerts_enabled, total_score FROM users WHERE telegram_id = $1', [ctx.from.id]);
   const u = res.rows[0] || {};
@@ -666,14 +660,13 @@ bot.action('user_profile', async (ctx) => {
   }).catch(() => {});
 });
 
-// User Preferences UI
 const renderUserPrefs = async (ctx: any) => {
   const res = await pool.query('SELECT target_exam, preferred_subjects, alerts_enabled FROM users WHERE telegram_id = $1', [ctx.from.id]);
   const u = res.rows[0] || { target_exam: 'UPSC / UPPSC', preferred_subjects: SUBJECTS, alerts_enabled: true };
   const subs: string[] = u.preferred_subjects || [];
 
   const examBtns = EXAMS.map(ex => Markup.button.callback(`${u.target_exam === ex ? '✅ ' : ''}${ex}`, `uexam_${ex}`));
-  const subBtns: any[] = [];
+  const subBtns: any[][] = [];
   for (let i = 0; i < SUBJECTS.length; i += 2) {
     const row = [Markup.button.callback(`${subs.includes(SUBJECTS[i]) ? '✅ ' : '⬜ '}${SUBJECTS[i]}`, `usub_${SUBJECTS[i]}`)];
     if (SUBJECTS[i + 1]) {
@@ -722,7 +715,6 @@ bot.action('utoggle_alerts', async (ctx) => {
   return renderUserPrefs(ctx);
 });
 
-// Demo Quiz Action
 bot.action('play_demo', async (ctx) => {
   await ctx.answerCbQuery('Sending Quiz...');
   const res = await pool.query('SELECT * FROM questions ORDER BY RANDOM() LIMIT 1');
@@ -755,13 +747,15 @@ bot.command('setupgroup', async (ctx) => {
       ON CONFLICT (chat_id) DO UPDATE SET title = $2, owner_id = $3, is_active = TRUE
     `, [ctx.chat.id, ctx.chat.title || 'Group', ctx.from.id]);
 
+    const setupKb: any[][] = [
+      [Markup.button.callback('▶️ Start Live Test', `start_quiz_${ctx.chat.id}`), Markup.button.callback('🛑 Stop Test', `stop_quiz_${ctx.chat.id}`)],
+      [Markup.button.url('⚙️ Customize Group & Force Sub', `[https://t.me/$](https://t.me/$){ctx.botInfo.username}?start=settings`)]
+    ];
+
     ctx.reply(
       `✅ **"${ctx.chat.title}" सफलतापूर्वक रजिस्टर हो गया है!**\n\n` +
       `इस ग्रुप में अपना Force Subscribe चैनल, विषय या टेस्ट कंट्रोल करने के लिए बॉट के प्राइवेट चैट में **/mygroups** लिखें या नीचे बटन दबाएं:`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback('▶️ Start Live Test', `start_quiz_${ctx.chat.id}`), Markup.button.callback('🛑 Stop Test', `stop_quiz_${ctx.chat.id}`)],
-        [Markup.button.url('⚙️ Customize Group & Force Sub', `[https://t.me/$](https://t.me/$){ctx.botInfo.username}?start=settings`)]
-      ])
+      Markup.inlineKeyboard(setupKb)
     );
   } catch (err) {
     ctx.reply('❌ कृपया पहले बॉट को इस ग्रुप में Admin बनाएं।');
@@ -781,7 +775,7 @@ const renderOwnerGroups = async (ctx: any) => {
     ).catch(() => {});
   }
 
-  const btns = res.rows.map(g => [
+  const btns: any[][] = res.rows.map(g => [
     Markup.button.callback(`${g.is_active ? '🟢' : '🔴'} ${g.title}`, `manage_grp_${g.chat_id}`)
   ]);
   btns.push([Markup.button.callback('🔙 Back to Home', 'user_home')]);
@@ -794,11 +788,15 @@ const renderOwnerGroups = async (ctx: any) => {
 
 bot.command(['mygroups', 'settings'], async (ctx) => {
   if (ctx.chat.type !== 'private') return ctx.reply('कृपया बॉट के प्राइवेट चैट (DM) में `/mygroups` भेजें।');
-  const res = await pool.query('SELECT chat_id, title, is_active FROM channels WHERE owner_id = $1', [ctx.from.id]);
-  if (res.rows.length === 0 && ctx.from.id.toString() !== ADMIN_ID) {
+  const isMaster = ctx.from.id.toString() === ADMIN_ID;
+  const res = isMaster
+    ? await pool.query('SELECT chat_id, title, is_active FROM channels ORDER BY title LIMIT 20')
+    : await pool.query('SELECT chat_id, title, is_active FROM channels WHERE owner_id = $1', [ctx.from.id]);
+
+  if (res.rows.length === 0) {
     return ctx.reply('आपका कोई ग्रुप रजिस्टर नहीं है। बॉट को अपने ग्रुप में Admin बनाएं और वहां `/setupgroup` लिखें।');
   }
-  const btns = res.rows.map(g => [Markup.button.callback(`${g.is_active ? '🟢' : '🔴'} ${g.title}`, `manage_grp_${g.chat_id}`)]);
+  const btns: any[][] = res.rows.map(g => [Markup.button.callback(`${g.is_active ? '🟢' : '🔴'} ${g.title}`, `manage_grp_${g.chat_id}`)]);
   btns.push([Markup.button.callback('🔙 Main Menu', 'user_home')]);
   ctx.reply('⚙️ **अपने ग्रुप को मैनेज करने के लिए उस पर क्लिक करें:**', Markup.inlineKeyboard(btns));
 });
@@ -820,7 +818,7 @@ const renderSingleGroupControl = async (ctx: any, chatId: number) => {
                `🔐 Group Force Sub: **${g.force_sub_id ? `${g.force_sub_id} ✅` : 'Not Set ❌'}**\n` +
                `📚 Active Subjects: **${(g.selected_subjects || []).length}/13 Selected**`;
 
-  const btns = [
+  const btns: any[][] = [
     [
       Markup.button.callback('▶️ Start Live Test Now', `start_quiz_${chatId}`),
       Markup.button.callback('🛑 Stop Running Test', `stop_quiz_${chatId}`)
@@ -875,11 +873,10 @@ bot.action(/^stop_quiz_(-?\d+)$/, async (ctx) => {
   if (ctx.chat?.type === 'private') return renderSingleGroupControl(ctx, chatId);
 });
 
-// Group Subjects Customization Menu
 const renderGroupSubjects = async (ctx: any, chatId: number) => {
   const res = await pool.query('SELECT title, selected_subjects FROM channels WHERE chat_id = $1', [chatId]);
   const subs: string[] = res.rows[0]?.selected_subjects || SUBJECTS;
-  const subBtns: any[] = [];
+  const subBtns: any[][] = [];
   for (let i = 0; i < SUBJECTS.length; i += 2) {
     const row = [Markup.button.callback(`${subs.includes(SUBJECTS[i]) ? '✅ ' : '⬜ '}${SUBJECTS[i]}`, `gtogsub_${chatId}_${SUBJECTS[i]}`)];
     if (SUBJECTS[i + 1]) {
@@ -904,7 +901,6 @@ bot.action(/^gtogsub_(-?\d+)_(.+)$/, async (ctx) => {
   return renderGroupSubjects(ctx, chatId);
 });
 
-// Group Owner Force Sub Setup (Easy Handling)
 bot.action(/^gfsub_set_(-?\d+)$/, async (ctx) => {
   const chatId = Number(ctx.match[1]);
   userStates.set(ctx.from.id, { action: 'SET_GROUP_FSUB', targetChatId: chatId });
@@ -948,7 +944,7 @@ const renderMasterAdmin = async (ctx: any) => {
                     `🔐 **Master Force Sub:** ${fsubOn === 'true' ? `ON 🟢 (${fsubId || 'Not Set'})` : 'OFF 🔴'}\n` +
                     `🏷 **Smart Branding:** ${brandText}`;
 
-  const buttons = [
+  const buttons: any[][] = [
     [Markup.button.callback('📢 Broadcast (No Pin)', 'adm_bc_normal'), Markup.button.callback('📌 Broadcast & Auto-Pin', 'adm_bc_pin')],
     [Markup.button.callback('🚀 Start Test in All Groups', 'adm_force_all'), Markup.button.callback('🛑 Stop All Running Tests', 'adm_stop_all')],
     [Markup.button.callback('⚡ Generate +10 AI Questions Now', 'adm_gen_now'), Markup.button.callback(factoryOn === 'true' ? '⏸ Pause AI Factory' : '▶️ Resume AI Factory', 'adm_toggle_factory')],
@@ -1023,7 +1019,6 @@ bot.action('adm_sub_stats', async (ctx) => {
   ).catch(() => {});
 });
 
-// Admin Interactive Prompts (Broadcast, Pin, Branding, Ban, Master FSub)
 bot.action('adm_bc_normal', async (ctx) => {
   if (ctx.from.id.toString() !== ADMIN_ID) return;
   userStates.set(ctx.from.id, { action: 'ADM_BC_NORMAL' });
@@ -1066,7 +1061,6 @@ bot.on('message', async (ctx) => {
   const state = userStates.get(ctx.from.id);
   if (!state) return;
 
-  // 1. Handle Broadcast (Normal & Auto-Pin)
   if (state.action === 'ADM_BC_NORMAL' || state.action === 'ADM_BC_PIN') {
     const shouldPin = state.action === 'ADM_BC_PIN';
     userStates.delete(ctx.from.id);
@@ -1098,7 +1092,6 @@ bot.on('message', async (ctx) => {
     return ctx.reply(`✅ **Broadcast Complete!**\n\n👤 Users Reached: ${uSent}\n📢 Groups Reached: ${gSent}\n📌 Pinned in Groups: ${pinned}`);
   }
 
-  // 2. Handle Easy Force Subscribe Setup (Master & Group Owner)
   if (state.action === 'ADM_SET_FSUB' || state.action === 'SET_GROUP_FSUB') {
     let targetChannelId = '';
     let targetInviteLink = '';
@@ -1116,7 +1109,6 @@ bot.on('message', async (ctx) => {
       return ctx.reply('❌ कृपया चैनल का `@username` भेजें या चैनल से कोई पोस्ट यहाँ Forward करें (या /cancel लिखें)।');
     }
 
-    // Verify Bot is Admin in that channel
     try {
       const botMember = await ctx.telegram.getChatMember(targetChannelId, ctx.botInfo.id);
       if (botMember.status !== 'administrator') {
@@ -1145,7 +1137,6 @@ bot.on('message', async (ctx) => {
     }
   }
 
-  // 3. Handle Smart Branding Update
   if (state.action === 'ADM_SET_BRAND' && 'text' in ctx.message) {
     const parts = ctx.message.text.split('|');
     const bText = parts[0]?.trim() || '🎯 Powered by Smart AI Quiz';
@@ -1157,7 +1148,6 @@ bot.on('message', async (ctx) => {
     return renderMasterAdmin(ctx);
   }
 
-  // 4. Handle User Ban / Unban Toggle
   if (state.action === 'ADM_BAN_TOGGLE' && 'text' in ctx.message) {
     const targetId = Number(ctx.message.text.trim());
     if (isNaN(targetId)) return ctx.reply('❌ कृपया सही Numeric User ID डालें।');
@@ -1177,7 +1167,6 @@ bot.on('message', async (ctx) => {
   }
 });
 
-// Legacy Quick Commands Support
 bot.command('forcepost', async (ctx) => {
   if (ctx.from.id.toString() !== ADMIN_ID) return;
   const subject = getHourlySubject();
