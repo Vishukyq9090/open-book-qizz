@@ -869,6 +869,7 @@ const autoResumeOnServerBoot = async () => {
 };
 
 // =========================================================
+// =========================================================
 // PART 3: USER INTERFACE, GROUP MANAGEMENT & ADMIN PANEL
 // =========================================================
 
@@ -877,18 +878,18 @@ const renderMainMenu = async (ctx: any) => {
   const botUser = ctx.botInfo?.username || '';
   const giftTag = await getCfg('gift_tagline');
   const text =
-    `🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ में आपका स्वागत है!*\n\n` +
-    `यहाँ प्रतिदिन सुबह *8:00 AM से रात 11:00 PM (15 घंटे)* तक 13 विषयों और मिक्स्ड मॉक टेस्ट का आयोजन होता है।\n\n` +
-    `✨ *विशेषताएं:*\n` +
-    `• टॉपिक-वाइज क्रमवार सिलेबस और Top PYQs\n` +
-    `• 1/4 नेगेटिव मार्किंग और लाइव मेरिट लिस्ट\n` +
-    `• किसी भी ग्रुप में जोड़ने पर 1 महीना बिल्कुल मुफ्त ट्रायल!\n\n` +
-    `${giftTag}`;
+    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ में आपका स्वागत है!*\n\n' +
+    'यहाँ प्रतिदिन सुबह *8:00 AM से रात 11:00 PM (15 घंटे)* तक 13 विषयों और मिक्स्ड मॉक टेस्ट का आयोजन होता है।\n\n' +
+    '✨ *विशेषताएं:*\n' +
+    '• टॉपिक-वाइज क्रमवार सिलेबस और Top PYQs\n' +
+    '• 1/4 नेगेटिव मार्किंग और लाइव मेरिट लिस्ट\n' +
+    '• किसी भी ग्रुप में जोड़ने पर 1 महीना बिल्कुल मुफ्त ट्रायल!\n\n' +
+    giftTag;
 
   const kb: any[][] = [
     [Markup.button.callback('🎯 Exam & Subject Preferences', 'u_prefs'), Markup.button.callback('📅 15-Hour Schedule', 'u_sched')],
     [Markup.button.callback('⚙️ My Groups (Start/Stop)', 'u_groups'), Markup.button.callback('🏆 Monthly Topper List', 'u_monthly')],
-    [Markup.button.url('➕ Add Bot to Your Group / Channel', `https://t.me/${botUser}?startgroup=true`)]
+    [Markup.button.url('➕ Add Bot to Your Group / Channel', 'https://t.me/' + botUser + '?startgroup=true')]
   ];
   if (isMaster(ctx.from.id)) kb.push([Markup.button.callback('👑 PROFESSOR MASTER ADMIN PANEL 👑', 'adm_home')]);
 
@@ -898,8 +899,7 @@ const renderMainMenu = async (ctx: any) => {
 
 bot.start(async (ctx) => {
   await pool.query(
-    `INSERT INTO users(telegram_id, username, first_name) VALUES($1,$2,$3)
-     ON CONFLICT(telegram_id) DO UPDATE SET username=$2, first_name=$3`,
+    'INSERT INTO users(telegram_id, username, first_name) VALUES($1,$2,$3) ON CONFLICT(telegram_id) DO UPDATE SET username=$2, first_name=$3',
     [ctx.from.id, ctx.from.username || 'student', ctx.from.first_name || 'Student']
   ).catch(() => {});
 
@@ -909,7 +909,7 @@ bot.start(async (ctx) => {
     btns.push([Markup.button.callback('✅ मैंने दोनों जॉइन कर लिए (Verify)', 'verify_fsub')]);
     return safeSend(
       ctx.chat.id,
-      `🔒 *आवश्यक सूचना:*\nलाइव क्विज़ और टेस्ट सीरीज़ अनलॉक करने के लिए कृपया नीचे दिए गए दोनों ऑफिशियल ग्रुप और चैनल से जुड़ें:`,
+      '🔒 *आवश्यक सूचना:*\nलाइव क्विज़ और टेस्ट सीरीज़ अनलॉक करने के लिए कृपया नीचे दिए गए दोनों ऑफिशियल ग्रुप और चैनल से जुड़ें:',
       Markup.inlineKeyboard(btns)
     );
   }
@@ -931,33 +931,33 @@ const renderScheduleView = async (ctx: any) => {
   const currentHr = ist.getUTCHours();
   const currentSub = getSubjectForHour(currentHr);
 
-  let msg = `📅 *PROFESSOR 15-HOUR DAILY TIME-TABLE* 📅\n`;
-  msg += `*(सुबह 8:00 AM से रात 11:00 PM IST)*\n\n`;
-  msg += `🟢 *वर्तमान में चल रहा टेस्ट:* *${(currentHr >= 8 && currentHr <= 22) ? currentSub : 'विश्राम अवधि (रात्रि 11 बजे से प्रातः 8 बजे)'}*\n\n`;
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+  let msg = '📅 *PROFESSOR 15-HOUR DAILY TIME-TABLE* 📅\n';
+  msg += '*(सुबह 8:00 AM से रात 11:00 PM IST)*\n\n';
+  msg += '🟢 *वर्तमान में चल रहा टेस्ट:* *' + ((currentHr >= 8 && currentHr <= 22) ? currentSub : 'विश्राम अवधि (रात्रि 11 बजे से प्रातः 8 बजे)') + '*\n\n';
+  msg += '━━━━━━━━━━━━━━━━━━━━━\n';
 
   const timeSlots = [
-    "08:00 AM — History (इतिहास)",
-    "09:00 AM — Geography (भूगोल)",
-    "10:00 AM — Economy (अर्थव्यवस्था)",
-    "11:00 AM — Environment (पर्यावरण)",
-    "12:00 PM — Polity (संविधान एवं राजव्यवस्था)",
-    "01:00 PM — Current Affairs (समसामयिकी)",
-    "02:00 PM — Physics (भौतिक विज्ञान)",
-    "03:00 PM — Chemistry (रसायन विज्ञान)",
-    "04:00 PM — GS Mathematics & Science",
-    "05:00 PM — Math (गणित)",
-    "06:00 PM — English (अंग्रेजी)",
-    "07:00 PM — Reasoning (तार्किकता)",
-    "08:00 PM — Hindi (सामान्य हिंदी)",
-    "09:00 PM — Mixed Mock Test Part 1",
-    "10:00 PM — Mixed Mock Test Part 2"
+    '08:00 AM — History (इतिहास)',
+    '09:00 AM — Geography (भूगोल)',
+    '10:00 AM — Economy (अर्थव्यवस्था)',
+    '11:00 AM — Environment (पर्यावरण)',
+    '12:00 PM — Polity (संविधान एवं राजव्यवस्था)',
+    '01:00 PM — Current Affairs (समसामयिकी)',
+    '02:00 PM — Physics (भौतिक विज्ञान)',
+    '03:00 PM — Chemistry (रसायन विज्ञान)',
+    '04:00 PM — GS Mathematics & Science',
+    '05:00 PM — Math (गणित)',
+    '06:00 PM — English (अंग्रेजी)',
+    '07:00 PM — Reasoning (तार्किकता)',
+    '08:00 PM — Hindi (सामान्य हिंदी)',
+    '09:00 PM — Mixed Mock Test Part 1',
+    '10:00 PM — Mixed Mock Test Part 2'
   ];
 
   timeSlots.forEach((slot, idx) => {
     const slotHr = 8 + idx;
     const isLive = slotHr === currentHr;
-    msg += `${isLive ? '👉 *' : '• '} ${slot} ${isLive ? ' (LIVE ⚡)*' : ''}\n`;
+    msg += (isLive ? '👉 *' : '• ') + slot + (isLive ? ' (LIVE ⚡)*\n' : '\n');
   });
 
   const kb = Markup.inlineKeyboard([[Markup.button.callback('🔙 Main Menu', 'u_home')]]);
@@ -971,24 +971,23 @@ bot.command('schedule', (ctx) => renderScheduleView(ctx));
 // Monthly Topper Command (/monthlytop)
 const renderMonthlyTopperList = async (ctx: any) => {
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
-  const monthKey = `${ist.getUTCFullYear()}-${String(ist.getUTCHours() ? ist.getUTCMonth() + 1 : ist.getUTCMonth()).padStart(2, '0')}`;
-  
+  const monthKey = ist.getUTCFullYear() + '-' + String(ist.getUTCMonth() + 1).padStart(2, '0');
+
   const top = await pool.query(
-    `SELECT user_id, username, right_count, wrong_count, net_marks 
-     FROM monthly_scores WHERE month_key=$1 ORDER BY net_marks DESC LIMIT 10`,
+    'SELECT user_id, username, right_count, wrong_count, net_marks FROM monthly_scores WHERE month_key=$1 ORDER BY net_marks DESC LIMIT 10',
     [monthKey]
   ).catch(() => ({ rows: [] }));
 
-  let msg = `🏆 *MONTHLY TOPPER LEADERBOARD (${monthKey})* 🏆\n`;
-  msg += `🎁 *1 नवंबर को ₹100 Gift Card जीतने वाले शीर्ष अभ्यर्थी:* \n`;
-  msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+  let msg = '🏆 *MONTHLY TOPPER LEADERBOARD (' + monthKey + ')* 🏆\n';
+  msg += '🎁 *1 नवंबर को ₹100 Gift Card जीतने वाले शीर्ष अभ्यर्थी:* \n';
+  msg += '━━━━━━━━━━━━━━━━━━━━━\n\n';
 
   if (top.rows.length === 0) {
-    msg += `इस महीने अभी तक स्कोरबोर्ड खाली है। आज ही टेस्ट देना शुरू करें!\n`;
+    msg += 'इस महीने अभी तक स्कोरबोर्ड खाली है। आज ही टेस्ट देना शुरू करें!\n';
   } else {
     top.rows.forEach((r, i) => {
-      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `🎖 ${i + 1}.`;
-      msg += `${medal} [${r.username}](tg://user?id=${r.user_id}) — *${Number(r.net_marks).toFixed(2)} Points*\n`;
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖 ' + (i + 1) + '.';
+      msg += medal + ' [' + r.username + '](tg://user?id=' + r.user_id + ') — *' + Number(r.net_marks).toFixed(2) + ' Points*\n';
     });
   }
 
@@ -1007,21 +1006,21 @@ const renderPrefs = async (ctx: any) => {
   const subs: string[] = u.preferred_subjects || [];
 
   const kb: any[][] = [
-    EXAMS.slice(0, 2).map(e => Markup.button.callback(`${u.target_exam === e ? '✅ ' : ''}${e}`, `setex_${e}`)),
-    EXAMS.slice(2, 4).map(e => Markup.button.callback(`${u.target_exam === e ? '✅ ' : ''}${e}`, `setex_${e}`))
+    EXAMS.slice(0, 2).map(e => Markup.button.callback((u.target_exam === e ? '✅ ' : '') + e, 'setex_' + e)),
+    EXAMS.slice(2, 4).map(e => Markup.button.callback((u.target_exam === e ? '✅ ' : '') + e, 'setex_' + e))
   ];
   const coreSubs = SCHEDULE_15H.slice(0, 13);
   for (let i = 0; i < coreSubs.length; i += 2) {
-    const row = [Markup.button.callback(`${subs.includes(coreSubs[i]) ? '✅ ' : '⬜ '}${coreSubs[i]}`, `setsub_${coreSubs[i]}`)];
-    if (coreSubs[i + 1]) row.push(Markup.button.callback(`${subs.includes(coreSubs[i + 1]) ? '✅ ' : '⬜ '}${coreSubs[i + 1]}`, `setsub_${coreSubs[i + 1]}`));
+    const row = [Markup.button.callback((subs.includes(coreSubs[i]) ? '✅ ' : '⬜ ') + coreSubs[i], 'setsub_' + coreSubs[i])];
+    if (coreSubs[i + 1]) row.push(Markup.button.callback((subs.includes(coreSubs[i + 1]) ? '✅ ' : '⬜ ') + coreSubs[i + 1], 'setsub_' + coreSubs[i + 1]));
     kb.push(row);
   }
-  kb.push([Markup.button.callback(`🔔 Mention Alerts: ${u.alerts_enabled ? 'ON ✅' : 'OFF 🔕'}`, 'tog_alert')]);
+  kb.push([Markup.button.callback('🔔 Mention Alerts: ' + (u.alerts_enabled ? 'ON ✅' : 'OFF 🔕'), 'tog_alert')]);
   kb.push([Markup.button.callback('💾 Save & Back', 'u_home')]);
 
   return safeEdit(
     ctx,
-    `🎯 *अपनी परीक्षा और विषय चुनें:*\n(टेस्ट शुरू होने से 10 मिनट, 5 मिनट और 1 मिनट पहले बॉट आपको मेंशन करके अलर्ट करेगा)`,
+    '🎯 *अपनी परीक्षा और विषय चुनें:*\n(टेस्ट शुरू होने से 10 मिनट, 5 मिनट और 1 मिनट पहले बॉट आपको मेंशन करके अलर्ट करेगा)',
     Markup.inlineKeyboard(kb)
   );
 };
@@ -1052,17 +1051,16 @@ bot.on('my_chat_member', async (ctx) => {
     const adder = ctx.myChatMember.from;
     if (['group', 'supergroup', 'channel'].includes(chat.type) && ['administrator', 'member'].includes(st)) {
       await pool.query(
-        `INSERT INTO channels(chat_id, title, owner_id, is_active) VALUES($1,$2,$3,TRUE)
-         ON CONFLICT(chat_id) DO UPDATE SET title=$2, is_active=TRUE`,
+        'INSERT INTO channels(chat_id, title, owner_id, is_active) VALUES($1,$2,$3,TRUE) ON CONFLICT(chat_id) DO UPDATE SET title=$2, is_active=TRUE',
         [chat.id, chat.title || 'Educational Group', adder.id]
       );
       await safeSend(
         chat.id,
-        `🎓 *धन्यवाद! Professor AI Quiz Bot अब "${chat.title}" में सक्रिय है!*\n` +
-        `🎁 *1 Month Free Trial Activated!* यहाँ प्रतिदिन सुबह 8 बजे से रात 11 बजे तक विषयवार लाइव टेस्ट चलेंगे।\n` +
-        `नीचे दिए गए बटन से अभी टेस्ट शुरू या बंद करें:`,
+        '🎓 *धन्यवाद! Professor AI Quiz Bot अब "' + (chat.title || 'Group') + '" में सक्रिय है!*\n' +
+        '🎁 *1 Month Free Trial Activated!* यहाँ प्रतिदिन सुबह 8 बजे से रात 11 बजे तक विषयवार लाइव टेस्ट चलेंगे।\n' +
+        'नीचे दिए गए बटन से अभी टेस्ट शुरू या बंद करें:',
         Markup.inlineKeyboard([
-          [Markup.button.callback('▶️ Start Live Quiz', `gstart_${chat.id}`), Markup.button.callback('🛑 Stop Quiz', `pause_test_${chat.id}`)]
+          [Markup.button.callback('▶️ Start Live Quiz', 'gstart_' + chat.id), Markup.button.callback('🛑 Stop Quiz', 'pause_test_' + chat.id)]
         ])
       );
     }
@@ -1072,14 +1070,13 @@ bot.on('my_chat_member', async (ctx) => {
 bot.command('setupgroup', async (ctx) => {
   if (ctx.chat.type === 'private') return ctx.reply('यह कमांड अपने ग्रुप के अंदर लिखें।');
   await pool.query(
-    `INSERT INTO channels(chat_id, title, owner_id, is_active) VALUES($1,$2,$3,TRUE)
-     ON CONFLICT(chat_id) DO UPDATE SET title=$2, owner_id=$3, is_active=TRUE`,
+    'INSERT INTO channels(chat_id, title, owner_id, is_active) VALUES($1,$2,$3,TRUE) ON CONFLICT(chat_id) DO UPDATE SET title=$2, owner_id=$3, is_active=TRUE',
     [ctx.chat.id, ctx.chat.title || 'Group', ctx.from.id]
   );
   return safeSend(
     ctx.chat.id,
-    `✅ *"${ctx.chat.title}" लाइव टेस्ट सीरीज़ के लिए जुड़ गया है!* (30 Days Free Trial Active)`,
-    Markup.inlineKeyboard([[Markup.button.callback('▶️ Start Test Now', `gstart_${ctx.chat.id}`), Markup.button.callback('🛑 Stop Test', `pause_test_${ctx.chat.id}`)]])
+    '✅ *"' + (ctx.chat.title || 'Group') + '" लाइव टेस्ट सीरीज़ के लिए जुड़ गया है!* (30 Days Free Trial Active)',
+    Markup.inlineKeyboard([[Markup.button.callback('▶️ Start Test Now', 'gstart_' + ctx.chat.id), Markup.button.callback('🛑 Stop Test', 'pause_test_' + ctx.chat.id)]])
   );
 });
 
@@ -1091,15 +1088,15 @@ bot.action('u_groups', async (ctx) => {
   if (r.rows.length === 0) {
     return safeEdit(
       ctx,
-      `📢 आपका कोई ग्रुप नहीं जुड़ा है। बॉट को अपने ग्रुप में Admin बनाएं और वहां */setupgroup* लिखें।`,
+      '📢 आपका कोई ग्रुप नहीं जुड़ा है। बॉट को अपने ग्रुप में Admin बनाएं और वहां */setupgroup* लिखें।',
       Markup.inlineKeyboard([[Markup.button.callback('🔙 Back', 'u_home')]])
     );
   }
   const kb: any[][] = r.rows.map(g => [
-    Markup.button.callback(`${g.is_active ? '🟢' : '🔴'} ${g.title}`, `gpanel_${g.chat_id}`)
+    Markup.button.callback((g.is_active ? '🟢 ' : '🔴 ') + g.title, 'gpanel_' + g.chat_id)
   ]);
   kb.push([Markup.button.callback('🔙 Back', 'u_home')]);
-  return safeEdit(ctx, `⚙️ *अपने ग्रुप को मैनेज करने के लिए चुनें:*`, Markup.inlineKeyboard(kb));
+  return safeEdit(ctx, '⚙️ *अपने ग्रुप को मैनेज करने के लिए चुनें:*', Markup.inlineKeyboard(kb));
 });
 
 bot.command('mygroups', async (ctx) => {
@@ -1109,7 +1106,7 @@ bot.command('mygroups', async (ctx) => {
     : await pool.query('SELECT * FROM channels WHERE owner_id=$1', [ctx.from.id]);
 
   if (r.rows.length === 0) return ctx.reply('आपका कोई ग्रुप नहीं जुड़ा है। बॉट को ग्रुप में जोड़कर /setupgroup लिखें।');
-  const kb: any[][] = r.rows.map(g => [Markup.button.callback(`${g.is_active ? '🟢' : '🔴'} ${g.title}`, `gpanel_${g.chat_id}`)]);
+  const kb: any[][] = r.rows.map(g => [Markup.button.callback((g.is_active ? '🟢 ' : '🔴 ') + g.title, 'gpanel_' + g.chat_id)]);
   kb.push([Markup.button.callback('🔙 Main Menu', 'u_home')]);
   return safeSend(ctx.chat.id, '⚙️ *अपने ग्रुप को मैनेज करने के लिए चुनें:*', Markup.inlineKeyboard(kb));
 });
@@ -1122,15 +1119,15 @@ const renderGroupPanel = async (ctx: any, chatId: number) => {
   const trialDate = g.trial_ends_at ? new Date(g.trial_ends_at).toLocaleDateString('hi-IN') : 'N/A';
 
   const txt =
-    `⚙️ *Group Management: ${g.title}*\n\n` +
-    `📡 Auto-Posting Status: *${g.is_active ? 'ACTIVE 🟢' : 'STOPPED 🔴'}*\n` +
-    `💳 Subscription: *${subOk ? 'ACTIVE ✅' : 'EXPIRED ❌ (100 Stars Required)'}*\n` +
-    `📅 Free Trial Ends: *${trialDate}*`;
+    '⚙️ *Group Management: ' + g.title + '*\n\n' +
+    '📡 Auto-Posting Status: *' + (g.is_active ? 'ACTIVE 🟢' : 'STOPPED 🔴') + '*\n' +
+    '💳 Subscription: *' + (subOk ? 'ACTIVE ✅' : 'EXPIRED ❌ (100 Stars Required)') + '*\n' +
+    '📅 Free Trial Ends: *' + trialDate + '*';
 
   const kb: any[][] = [
-    [Markup.button.callback('▶️ Start Current Hour Test', `gstart_${chatId}`), Markup.button.callback('🛑 Pause/Stop Test', `pause_test_${chatId}`)],
-    [Markup.button.callback(g.is_active ? '🔕 Disable Daily Schedule' : '🔔 Enable Daily Schedule', `gtog_${chatId}`)],
-    [Markup.button.callback('⭐ Activate / Renew 1 Month (100 Stars)', `gpay_${chatId}`)],
+    [Markup.button.callback('▶️ Start Current Hour Test', 'gstart_' + chatId), Markup.button.callback('🛑 Pause/Stop Test', 'pause_test_' + chatId)],
+    [Markup.button.callback(g.is_active ? '🔕 Disable Daily Schedule' : '🔔 Enable Daily Schedule', 'gtog_' + chatId)],
+    [Markup.button.callback('⭐ Activate / Renew 1 Month (100 Stars)', 'gpay_' + chatId)],
     [Markup.button.callback('🔙 Back to Groups', 'u_groups')]
   ];
   return safeEdit(ctx, txt, Markup.inlineKeyboard(kb));
@@ -1150,7 +1147,7 @@ bot.action(/^gstart_(-?\d+)$/, async (ctx) => {
   const cid = Number(ctx.match[1]);
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
   const sub = getSubjectForHour(ist.getUTCHours());
-  await ctx.answerCbQuery(`Starting ${sub} Test!`);
+  await ctx.answerCbQuery('Starting ' + sub + ' Test!');
   startHourlySubjectTest(cid, sub, 0);
 });
 bot.action(/^pause_test_(-?\d+)$/, async (ctx) => {
@@ -1161,7 +1158,7 @@ bot.action(/^pause_test_(-?\d+)$/, async (ctx) => {
 
 // 16. PROFESSOR MASTER ADMIN PANEL (/admin - CUSTOMIZE EVERYTHING)
 const renderAdmin = async (ctx: any) => {
-  if (!isMaster(ctx.from.id)) return ctx.reply(`❌ आपकी ID: ${ctx.from.id} है। इसे Render में ADMIN_ID में डालें।`);
+  if (!isMaster(ctx.from.id)) return ctx.reply('❌ आपकी ID: ' + ctx.from.id + ' है। इसे Render में ADMIN_ID में डालें।');
   const uCnt = (await pool.query('SELECT COUNT(*) FROM users')).rows[0].count;
   const gCnt = (await pool.query('SELECT COUNT(*) FROM channels WHERE is_active=TRUE')).rows[0].count;
   const qCnt = (await pool.query('SELECT COUNT(*) FROM questions')).rows[0].count;
@@ -1169,11 +1166,11 @@ const renderAdmin = async (ctx: any) => {
   const facOn = await getCfg('factory_on');
 
   const txt =
-    `👑 *PROFESSOR MASTER ADMIN PANEL* 👑\n\n` +
-    `👥 कुल छात्र: *${uCnt}* | 📢 एक्टिव ग्रुप्स: *${gCnt}*\n` +
-    `📚 कुल प्रश्न बैंक: *${qCnt}*\n` +
-    `🔐 2-Channel Force Sub: *${fsubOn === 'true' ? 'ON 🟢' : 'OFF 🔴'}*\n` +
-    `⚙️ AI Question Factory: *${facOn === 'true' ? 'RUNNING 🟢' : 'PAUSED 🔴'}*`;
+    '👑 *PROFESSOR MASTER ADMIN PANEL* 👑\n\n' +
+    '👥 कुल छात्र: *' + uCnt + '* | 📢 एक्टिव ग्रुप्स: *' + gCnt + '*\n' +
+    '📚 कुल प्रश्न बैंक: *' + qCnt + '*\n' +
+    '🔐 2-Channel Force Sub: *' + (fsubOn === 'true' ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
+    '⚙️ AI Question Factory: *' + (facOn === 'true' ? 'RUNNING 🟢' : 'PAUSED 🔴') + '*';
 
   const kb: any[][] = [
     [Markup.button.callback('📢 Broadcast All', 'adm_bc'), Markup.button.callback('📌 Broadcast & Auto-Pin', 'adm_bcpin')],
@@ -1189,7 +1186,7 @@ const renderAdmin = async (ctx: any) => {
 };
 
 bot.command('admin', (ctx) => renderAdmin(ctx));
-bot.action('admin_home', (ctx) => renderAdmin(ctx));
+bot.action('adm_home', (ctx) => renderAdmin(ctx));
 
 bot.action('adm_tog_fsub', async (ctx) => {
   const c = await getCfg('fsub_enabled');
@@ -1201,7 +1198,7 @@ bot.action('adm_gen10', async (ctx) => {
   await ctx.answerCbQuery('Generating 10 Topic-Wise Questions...');
   await safeSend(ctx.chat.id, '⏳ *प्रोफेसर AI द्वारा टॉपिक-वाइज 10 नए सवाल व PYQ बनाए जा रहे हैं...*');
   const r = await generateQuestionsBatch();
-  await safeSend(ctx.chat.id, r.ok ? `✅ *[${r.sub} -> ${r.topic}]* के ${r.count} नए प्रश्न जुड़ गए!` : '❌ जनरेशन विफल। API Key चेक करें।');
+  await safeSend(ctx.chat.id, r.ok ? '✅ *[' + r.sub + ' -> ' + r.topic + ']* के ' + r.count + ' नए प्रश्न जुड़ गए!' : '❌ जनरेशन विफल। API Key चेक करें।');
   return renderAdmin(ctx);
 });
 
@@ -1213,7 +1210,7 @@ bot.action('adm_start_all', async (ctx) => {
     startHourlySubjectTest(Number(c.chat_id), sub, 0);
     await sleep(350);
   }
-  await ctx.answerCbQuery(`Started ${sub} in ${chs.rows.length} groups!`, { show_alert: true });
+  await ctx.answerCbQuery('Started ' + sub + ' in ' + chs.rows.length + ' groups!', { show_alert: true });
 });
 
 bot.action('adm_stop_all', async (ctx) => {
@@ -1224,7 +1221,7 @@ bot.action('adm_stop_all', async (ctx) => {
 const promptAdminInput = async (ctx: any, action: string, promptText: string) => {
   if (!isMaster(ctx.from.id)) return;
   userStates.set(ctx.from.id, { action });
-  await safeSend(ctx.chat.id, `${promptText}\n*(रद्द करने के लिए /cancel लिखें)*`);
+  await safeSend(ctx.chat.id, promptText + '\n*(रद्द करने के लिए /cancel लिखें)*');
 };
 
 bot.action('adm_bc', (ctx) => promptAdminInput(ctx, 'BC_NORM', '📢 *Broadcast मैसेज भेजें:*'));
@@ -1232,9 +1229,9 @@ bot.action('adm_bcpin', (ctx) => promptAdminInput(ctx, 'BC_PIN', '📌 *Broadcas
 bot.action('adm_gift', (ctx) => promptAdminInput(ctx, 'SET_GIFT', '🎁 *नया Gift Card Announcement टेक्स्ट लिखें:*'));
 bot.action('adm_promo', (ctx) => promptAdminInput(ctx, 'SET_PROMO', '📈 *हर 2 दिन में जाने वाला नया प्रमोशनल टेक्स्ट लिखें:*'));
 bot.action('adm_seo', (ctx) => promptAdminInput(ctx, 'SET_SEO', '🔍 *नए SEO Hashtags लिखें:*'));
-bot.action('adm_fsub1', (ctx) => promptAdminInput(ctx, 'SET_FSUB1', '🔐 *Main Channel (1) सेटअप:* बॉट को चैनल में Admin बनाएं और `@username | https://t.me/link` भेजें:'));
-bot.action('adm_fsub2', (ctx) => promptAdminInput(ctx, 'SET_FSUB2', '💬 *Quiz Group/Channel (2) सेटअप:* बॉट को ग्रुप में Admin बनाएं और `@username | https://t.me/link` भेजें:'));
-bot.action('adm_msg_win', (ctx) => promptAdminInput(ctx, 'MSG_WINNER', '💌 *Winner को Gift Card भेजने के लिए इस फॉरमेट में लिखें:*\n`USER_ID | बधाई हो! आपका ₹100 Gift Card कोड यहाँ है: XXXX`'));
+bot.action('adm_fsub1', (ctx) => promptAdminInput(ctx, 'SET_FSUB1', '🔐 *Main Channel (1) सेटअप:* बॉट को चैनल में Admin बनाएं और @username | https://t.me/link भेजें:'));
+bot.action('adm_fsub2', (ctx) => promptAdminInput(ctx, 'SET_FSUB2', '💬 *Quiz Group/Channel (2) सेटअप:* बॉट को ग्रुप में Admin बनाएं और @username | https://t.me/link भेजें:'));
+bot.action('adm_msg_win', (ctx) => promptAdminInput(ctx, 'MSG_WINNER', '💌 *Winner को Gift Card भेजने के लिए इस फॉरमेट में लिखें:*\nUSER_ID | बधाई हो! आपका ₹100 Gift Card कोड यहाँ है: XXXX'));
 
 bot.command('cancel', (ctx) => { userStates.delete(ctx.from.id); ctx.reply('✅ एक्शन रद्द किया गया।'); });
 
@@ -1257,7 +1254,7 @@ bot.on('message', async (ctx) => {
         await sleep(150);
       } catch {}
     }
-    return safeSend(ctx.chat.id, `✅ *Broadcast संपन्न!* (Users: ${uOk}, Groups: ${gOk})`);
+    return safeSend(ctx.chat.id, '✅ *Broadcast संपन्न!* (Users: ' + uOk + ', Groups: ' + gOk + ')');
   }
 
   if (!('text' in ctx.message)) return;
@@ -1268,22 +1265,25 @@ bot.on('message', async (ctx) => {
   if (st.action === 'SET_SEO') { await setCfg('seo_tags', txt); await safeSend(ctx.chat.id, '✅ SEO Hashtags अपडेट हो गए!'); return renderAdmin(ctx); }
 
   if (st.action === 'SET_FSUB1' || st.action === 'SET_FSUB2') {
-    const [cid, link] = txt.split('|').map(s => s.trim());
-    if (!cid || !link) return safeSend(ctx.chat.id, '❌ गलत फॉरमेट! उदाहरण: `@mychannel | https://t.me/mychannel`');
+    const parts = txt.split('|').map(s => s.trim());
+    const cid = parts[0];
+    const link = parts[1];
+    if (!cid || !link) return safeSend(ctx.chat.id, '❌ गलत फॉरमेट! उदाहरण: @mychannel | https://t.me/mychannel');
     const num = st.action === 'SET_FSUB1' ? '1' : '2';
-    await setCfg(`fsub${num}_id`, cid);
-    await setCfg(`fsub${num}_link`, link);
+    await setCfg('fsub' + num + '_id', cid);
+    await setCfg('fsub' + num + '_link', link);
     await setCfg('fsub_enabled', 'true');
-    await safeSend(ctx.chat.id, `✅ Force Sub Channel ${num} सफलतापूर्वक सेट हो गया!`);
+    await safeSend(ctx.chat.id, '✅ Force Sub Channel ' + num + ' सफलतापूर्वक सेट हो गया!');
     return renderAdmin(ctx);
   }
 
   if (st.action === 'MSG_WINNER') {
-    const [uid, ...msgParts] = txt.split('|');
-    const winMsg = msgParts.join('|').trim();
-    if (!uid || !winMsg) return safeSend(ctx.chat.id, '❌ सही फॉरमेट: `123456789 | आपका गिफ्ट कार्ड...`');
-    await safeSend(uid.trim(), `🏆 *PROFESSOR QUIZ WINNER REWARD* 🏆\n━━━━━━━━━━━━━━━━━━━━━\n${winMsg}`);
-    return safeSend(ctx.chat.id, `✅ टॉपर (${uid.trim()}) को इनाम का मैसेज सफलतापूर्वक भेज दिया गया!`);
+    const parts = txt.split('|');
+    const uid = parts[0]?.trim();
+    const winMsg = parts.slice(1).join('|').trim();
+    if (!uid || !winMsg) return safeSend(ctx.chat.id, '❌ सही फॉरमेट: 123456789 | आपका गिफ्ट कार्ड...');
+    await safeSend(uid, '🏆 *PROFESSOR QUIZ WINNER REWARD* 🏆\n━━━━━━━━━━━━━━━━━━━━━\n' + winMsg);
+    return safeSend(ctx.chat.id, '✅ टॉपर (' + uid + ') को इनाम का मैसेज सफलतापूर्वक भेज दिया गया!');
   }
 });
 
@@ -1294,15 +1294,14 @@ bot.command('forcepost', async (ctx) => {
   const sub = getSubjectForHour(ist.getUTCHours());
   const chs = await pool.query('SELECT chat_id FROM channels WHERE is_active=TRUE').catch(() => ({ rows: [] }));
   for (const c of chs.rows) startHourlySubjectTest(Number(c.chat_id), sub, 0);
-  ctx.reply(`🚀 सभी ${chs.rows.length} ग्रुप्स में ${sub} का लाइव टेस्ट शुरू कर दिया गया है!`);
+  ctx.reply('🚀 सभी ' + chs.rows.length + ' ग्रुप्स में ' + sub + ' का लाइव टेस्ट शुरू कर दिया गया है!');
 });
 
 // 17. SELF-HEALING BOT LAUNCHER WITH CRASH AUTO-RESUME
 const launchBot = async () => {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-    
-    // Bootup triggers
+
     setTimeout(() => {
       autoResumeOnServerBoot();
       generateQuestionsBatch();
