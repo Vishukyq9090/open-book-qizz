@@ -444,7 +444,7 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
   if (minCheckOn && chatId < 0 && resumeFromMinuteOffset === 0) {
     try {
       const chatObj: any = await bot.telegram.getChat(chatId);
-      const memberCount = chatObj.all_members_are_administrators ? 10 : (await bot.telegram.getChatMemberCount(chatId));
+      const memberCount = chatObj.all_members_are_administrators ? 10 : (await bot.telegram.getChatMembersCount(chatId));
       // If group has less than 3 members total, notify and pause
       if (memberCount > 0 && memberCount < 3) {
         await safeSend(chatId, '⚠️ *लाइव टेस्ट होल्ड कर दिया गया है!*\nनियम के अनुसार टेस्ट शुरू करने के लिए ग्रुप में कम से कम **3 प्रतिभागी** होने चाहिए। (वर्तमान सदस्य: ' + memberCount + ')');
