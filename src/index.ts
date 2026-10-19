@@ -8,7 +8,7 @@ dotenv.config();
 
 http.createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Professor AI Quiz Bot V5 (Gemini 4x + ChatGPT Fallback) Running 24/7!');
+  res.end('Professor AI Quiz Bot V5.5 (Min Participants + Multi-AI) Running 24/7!');
 }).listen(process.env.PORT || 3000);
 
 process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
@@ -103,10 +103,10 @@ const initDB = async () => {
     "CREATE TABLE IF NOT EXISTS test_scores (chat_id BIGINT, user_id BIGINT, username TEXT, right_count INT DEFAULT 0, wrong_count INT DEFAULT 0, net_marks NUMERIC(7,2) DEFAULT 0.00, PRIMARY KEY (chat_id, user_id))",
     "CREATE TABLE IF NOT EXISTS monthly_scores (month_key TEXT, user_id BIGINT, username TEXT, right_count INT DEFAULT 0, wrong_count INT DEFAULT 0, net_marks NUMERIC(8,2) DEFAULT 0.00, PRIMARY KEY (month_key, user_id))",
     "CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)",
-    "INSERT INTO bot_settings (key, value) VALUES ('fsub1_id', ''), ('fsub1_link', ''), ('fsub2_id', ''), ('fsub2_link', ''), ('fsub_enabled', 'false'), ('gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'), ('promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'), ('seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'), ('factory_on', 'true') ON CONFLICT (key) DO NOTHING"
+    "INSERT INTO bot_settings (key, value) VALUES ('fsub1_id', ''), ('fsub1_link', ''), ('fsub2_id', ''), ('fsub2_link', ''), ('fsub_enabled', 'false'), ('min_participants_enabled', 'true'), ('gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'), ('promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'), ('seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'), ('factory_on', 'true') ON CONFLICT (key) DO NOTHING"
   ];
   for (const q of queries) await pool.query(q).catch(() => {});
-  console.log('Professor V5 Database Ready!');
+  console.log('Professor V5.5 Database Ready!');
 };
 initDB();
 
@@ -142,7 +142,7 @@ const creditReferralIfEligible = async (uid: number) => {
     if (u.referred_by && !u.ref_credited && Number(u.referred_by) !== uid) {
       await pool.query('UPDATE users SET ref_credited = TRUE WHERE telegram_id = $1', [uid]);
       await pool.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + 5, referral_count = COALESCE(referral_count, 0) + 1 WHERE telegram_id = $1', [u.referred_by]);
-      await safeSend(u.referred_by, '🎉 *बधाई हो! नया रेफ़रल सफल हुआ!*\n👤 छात्र: *' + (u.first_name || 'Student') + '* ने बॉट जॉइन कर लिया है।\n💰 आपके वॉलेट में *+₹5* जोड़ दिए गए हैं! (/refer दबाकर बैलेंस चेक करें)');
+      await safeSend(u.referred_by, '🎉 *बधाई हो! नया रेफ़रल सफल हुआ!*\n👤 छात्र: *' + (u.first_name || 'Student') + '* ने बॉट जॉइन कर लिया है।\n💰 आपके वॉलेट में *+₹5* जोड़ दिए गए हैं!');
     }
   } catch {}
 };
@@ -172,7 +172,7 @@ const sendStarsInvoice = async (destChatId: number, targetGroupId: number) => {
   try {
     await bot.telegram.sendInvoice(destChatId, {
       title: 'Professor Quiz Bot - 1 Year Pro Activation',
-      description: 'अपने ग्रुप/चैनल में 1 साल (365 दिन) के लिए ऑटोमैटिक लाइव क्विज़ और कस्टमाइज़ेशन तुरंत एक्टिवेट करें।',
+      description: 'अपने ग्रुप/चैनल में 1 साल (365 दिन) के लिए ऑटोमैटिक लाइव क्विज़ तुरंत एक्टिवेट करें।',
       payload: 'sub_group_' + targetGroupId,
       provider_token: '',
       currency: 'XTR',
@@ -187,22 +187,20 @@ bot.on('successful_payment', async (ctx) => {
   if (payload.startsWith('sub_group_')) {
     const targetChatId = Number(payload.replace('sub_group_', ''));
     await pool.query("UPDATE channels SET sub_ends_at = NOW() + INTERVAL '365 days', approval_status = 'APPROVED', is_active = TRUE WHERE chat_id = $1", [targetChatId]);
-    await safeSend(ctx.chat.id, '🎉 *भुगतान सफल (100 Stars)!*\nआपका ग्रुप/चैनल (' + targetChatId + ') पूरे *1 साल (365 दिन)* के लिए ऑटो-एक्टिवेट कर दिया गया है!');
-    if (ADMIN_ID) await safeSend(ADMIN_ID, '⭐ *100 Stars Payment Received!*\nGroup ID: ' + targetChatId + '\nPaid by: ' + ctx.from.id);
+    await safeSend(ctx.chat.id, '🎉 *भुगतान सफल (100 Stars)!*\nआपका ग्रुप/चैनल पूरे *1 साल (365 दिन)* के लिए एक्टिवेट कर दिया गया है!');
+    if (ADMIN_ID) await safeSend(ADMIN_ID, '⭐ *100 Stars Payment Received!*\nGroup ID: ' + targetChatId);
   }
 });
 
 // =========================================================
-// MULTI-MODEL GEMINI (4 MODELS) + CHATGPT FALLBACK SEEDER
+// AI SEEDER ENGINE
 // =========================================================
 let seedCursor = 0;
 
 const getNextSubjectAndTopic = async (forcedSubject?: string): Promise<{ subject: string; topic: string }> => {
   const coreSubjects = SCHEDULE_15H.slice(0, 13);
   let subject = forcedSubject || '';
-
   if (!subject) {
-    // Find subject with lowest question count first so all 13 subjects fill evenly
     const lowRes = await pool.query('SELECT subject, COUNT(*) as c FROM questions GROUP BY subject ORDER BY c ASC LIMIT 1').catch(() => ({ rows: [] }));
     if (lowRes.rows.length > 0 && Number(lowRes.rows[0].c) < 60 && coreSubjects.includes(lowRes.rows[0].subject)) {
       subject = lowRes.rows[0].subject;
@@ -297,7 +295,6 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
     const errors: string[] = [];
 
-    // 1. TRY 4 DIFFERENT GEMINI MODELS (EACH HAS SEPARATE FREE QUOTA)
     if (geminiKey) {
       const geminiModels = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
       for (const model of geminiModels) {
@@ -311,10 +308,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             })
           });
           const d: any = await r.json();
-          if (d.error) {
-            errors.push(model + ': ' + (d.error.message || d.error.code));
-            continue;
-          }
+          if (d.error) { errors.push(model + ': ' + (d.error.message || d.error.code)); continue; }
           const txt = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
           if (!txt) continue;
           const arr = parseAIJsonArray(txt);
@@ -323,43 +317,28 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
           const saved = await saveQuestionsToDB(arr, subject, topic);
           if (saved > 0) {
             lastSeedReport = '✅ Gemini (' + model + ') added +' + saved + ' Qs in ' + subject;
-            console.log(lastSeedReport);
             isSeedingNow = false;
             return { ok: true, count: saved, sub: subject, topic, provider: 'Gemini (' + model + ')' };
           }
-        } catch (err: any) {
-          errors.push(model + ': ' + (err?.message || 'Error'));
-        }
+        } catch (err: any) { errors.push(model + ': ' + (err?.message || 'Error')); }
       }
-    } else {
-      errors.push('GEMINI_API_KEY missing');
     }
 
-    // 2. AUTOMATIC FALLBACK TO CHATGPT (OPENAI API)
     if (openAiKey) {
       for (const oModel of ['gpt-4o-mini', 'gpt-3.5-turbo']) {
         try {
           const r = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ' + openAiKey
-            },
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + openAiKey },
             body: JSON.stringify({
               model: oModel,
-              messages: [
-                { role: 'system', content: 'You are an exam question generator. Always respond with valid JSON containing a "questions" array.' },
-                { role: 'user', content: prompt }
-              ],
+              messages: [{ role: 'system', content: 'You are an exam question generator. Always respond with valid JSON containing a "questions" array.' }, { role: 'user', content: prompt }],
               response_format: { type: 'json_object' },
               temperature: 0.65
             })
           });
           const d: any = await r.json();
-          if (d.error) {
-            errors.push('ChatGPT (' + oModel + '): ' + (d.error.message || d.error.code));
-            continue;
-          }
+          if (d.error) { errors.push('ChatGPT (' + oModel + '): ' + (d.error.message || d.error.code)); continue; }
           const txt = d.choices?.[0]?.message?.content?.trim();
           if (!txt) continue;
           const arr = parseAIJsonArray(txt);
@@ -368,21 +347,15 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
           const saved = await saveQuestionsToDB(arr, subject, topic);
           if (saved > 0) {
             lastSeedReport = '✅ ChatGPT (' + oModel + ') added +' + saved + ' Qs in ' + subject;
-            console.log(lastSeedReport);
             isSeedingNow = false;
             return { ok: true, count: saved, sub: subject, topic, provider: 'ChatGPT (' + oModel + ')' };
           }
-        } catch (err: any) {
-          errors.push('ChatGPT: ' + (err?.message || 'Error'));
-        }
+        } catch (err: any) { errors.push('ChatGPT: ' + (err?.message || 'Error')); }
       }
-    } else {
-      errors.push('CHATGPT_API_KEY not saved in Render yet');
     }
 
     const errSummary = errors.slice(0, 3).join(' | ').substring(0, 220);
     lastSeedReport = '❌ Failed: ' + errSummary;
-    console.error('Seed Failed:', errSummary);
     isSeedingNow = false;
     return { ok: false, count: 0, sub: subject, topic, provider: 'NONE', error: errSummary };
   } catch (e: any) {
@@ -391,10 +364,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
   }
 };
 
-// Auto-Seed Every 1 Minute (Max Free Quota Speed + ChatGPT Fallback)
-cron.schedule('* * * * *', () => {
-  generateQuestionsBatch();
-});
+cron.schedule('* * * * *', () => { generateQuestionsBatch(); });
 
 const clearOldReminders = async (chatId: number) => {
   const ids = reminderMsgIds.get(chatId) || [];
@@ -417,11 +387,11 @@ const announceAndPinLeaderboard = async (chatId: number, subject: string) => {
         const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖 ' + (i + 1) + '.';
         const deducted = (Number(r.wrong_count) * 0.25).toFixed(2);
         msg += medal + ' [' + r.username + '](tg://user?id=' + r.user_id + ')\n';
-        msg += '   ├ ✅ तुमने सही किए: *' + r.right_count + '* | ❌ गलत हुए: *' + r.wrong_count + '*\n';
-        msg += '   ├ ✂️ कटे अंक: *-' + deducted + '* | 🎯 *कुल प्राप्तांक: ' + Number(r.net_marks).toFixed(2) + ' / 50*\n\n';
+        msg += '   ├ ✅ सही किए: *' + r.right_count + '* | ❌ गलत: *' + r.wrong_count + '*\n';
+        msg += '   ├ ✂️ कटे अंक: *-' + deducted + '* | 🎯 *प्राप्तांक: ' + Number(r.net_marks).toFixed(2) + ' / 50*\n\n';
       });
     }
-    msg += '*' + giftTag + '*\n\n📊 *मंथली मेरिट:* /monthlytop | 💰 *Refer & Earn ₹5:* /refer\n⏳ *अगला लाइव टेस्ट ठीक 10 मिनट बाद नए विषय के साथ शुरू होगा!*\n' + seoTags;
+    msg += '*' + giftTag + '*\n\n📊 *मंथली मेरिट:* /monthlytop | 💰 *Refer & Earn:* /refer\n⏳ *अगला लाइव टेस्ट ठीक 10 मिनट बाद शुरू होगा!*\n' + seoTags;
 
     const sent = await safeSend(chatId, msg);
     if (sent && 'message_id' in sent) await bot.telegram.pinChatMessage(chatId, sent.message_id, { disable_notification: false }).catch(() => {});
@@ -436,7 +406,7 @@ const stopTestInGroup = async (chatId: number, saveCheckpoint: boolean = true) =
 
   if (saveCheckpoint && running.currentQ < 50) {
     await pool.query("UPDATE channels SET checkpoints = jsonb_set(COALESCE(checkpoints, '{}'::jsonb), ARRAY[$1], to_jsonb($2::int)) WHERE chat_id = $3", [running.subject, running.currentQ, chatId]).catch(() => {});
-    await safeSend(chatId, '⏸ *' + running.subject + ' का टेस्ट प्रश्न संख्या ' + running.currentQ + ' पर रोका गया है।*\nअगले राउंड में यह ठीक *प्रश्न ' + (running.currentQ + 1) + '* से आगे शुरू होगा!');
+    await safeSend(chatId, '⏸ *' + running.subject + ' का टेस्ट प्रश्न संख्या ' + running.currentQ + ' पर रुका है।* अगले राउंड में यह आगे बढ़ेगा!');
   }
 };
 
@@ -448,6 +418,9 @@ const sendQuizSafe = async (chatId: number, questionText: string, opts: string[]
   }
 };
 
+// =========================================================
+// START TEST WITH MIN 3 PARTICIPANTS CHECK
+// =========================================================
 const startHourlySubjectTest = async (chatId: number, subject: string, resumeFromMinuteOffset: number = 0) => {
   if (activeTests.has(chatId)) await stopTestInGroup(chatId, true);
   await clearOldReminders(chatId);
@@ -460,10 +433,24 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
   if (!perm.ok) {
     if (perm.reason === 'PENDING_APPROVAL') return safeSend(chatId, '⏳ *यह ग्रुप/चैनल अभी मास्टर एडमिन के अप्रूवल की प्रतीक्षा में है।*');
     if (perm.reason === 'EXPIRED') {
-      await safeSend(chatId, '⚠️ *आपका 30 दिनों का फ्री ट्रायल समाप्त हो चुका है!*\n1 साल (365 दिन) के लिए ऑटो-एक्टिवेट करने हेतु *100 Telegram Stars* पे करें:');
+      await safeSend(chatId, '⚠️ *आपका 30 दिनों का फ्री ट्रायल समाप्त हो चुका है!*\n1 साल के लिए एक्टिवेट करने हेतु *100 Telegram Stars* पे करें:');
       return sendStarsInvoice(chatId, chatId);
     }
     return;
+  }
+
+  // CHECK MIN 3 PARTICIPANTS IF ENABLED
+  const minCheckOn = (await getCfg('min_participants_enabled')) !== 'false';
+  if (minCheckOn && chatId < 0 && resumeFromMinuteOffset === 0) {
+    try {
+      const chatObj: any = await bot.telegram.getChat(chatId);
+      const memberCount = chatObj.all_members_are_administrators ? 10 : (await bot.telegram.getChatMemberCount(chatId));
+      // If group has less than 3 members total, notify and pause
+      if (memberCount > 0 && memberCount < 3) {
+        await safeSend(chatId, '⚠️ *लाइव टेस्ट होल्ड कर दिया गया है!*\nनियम के अनुसार टेस्ट शुरू करने के लिए ग्रुप में कम से कम **3 प्रतिभागी** होने चाहिए। (वर्तमान सदस्य: ' + memberCount + ')');
+        return;
+      }
+    } catch {}
   }
 
   const savedQ = Number(ch.checkpoints?.[subject] || 0);
@@ -476,9 +463,9 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
   await safeSend(
     chatId,
     '🏛 *PROFESSOR LIVE EXAMINATION: ' + subject + '* 🏛\n' +
-    (currentQ > 0 ? '🔄 *(पिछले राउंड के प्रश्न संख्या ' + (currentQ + 1) + ' से पुनः प्रारंभ)*\n' : '') +
+    (currentQ > 0 ? '🔄 *(प्रश्न ' + (currentQ + 1) + ' से पुनः प्रारंभ)*\n' : '') +
     '━━━━━━━━━━━━━━━━━━━━━\n📌 *कुल प्रश्न:* 50 (Easy ➔ Max Hard + 10 PYQs)\n⏱ *समय:* स्तर अनुसार (15s से 55s) | ⚖️ *माइनस मार्किंग:* 1/4' + customCap + '\n' + seoTags,
-    Markup.inlineKeyboard([[Markup.button.callback('🛑 Stop Test (Resume Next Round)', 'pause_test_' + chatId)]])
+    Markup.inlineKeyboard([[Markup.button.callback('🛑 Stop Test', 'pause_test_' + chatId)]])
   );
 
   const sendNextQuestion = async () => {
@@ -512,7 +499,7 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
       }
       if (qRes.rows.length === 0) {
         await stopTestInGroup(chatId, true);
-        await safeSend(chatId, '✨ *सूचना:* ' + subject + ' के नए प्रमाणित प्रश्न जोड़े जा रहे हैं। नया सेट जुड़ते ही अगले राउंड में यहीं से पोस्टिंग शुरू होगी!');
+        await safeSend(chatId, '✨ *सूचना:* ' + subject + ' के नए प्रश्न जोड़े जा रहे हैं।');
         return;
       }
 
@@ -896,7 +883,7 @@ bot.command('setupgroup', async (ctx) => {
 
 bot.action('u_groups', async (ctx) => {
   const r = isMaster(ctx.from.id) ? await pool.query('SELECT * FROM channels ORDER BY title LIMIT 30') : await pool.query('SELECT * FROM channels WHERE owner_id=$1', [ctx.from.id]);
-  if (r.rows.length === 0) return safeEdit(ctx, '📢 आपका कोई ग्रुप/चैनल नहीं जुड़ा है। होम मेनू के 1-Click बटन से बॉट को जोड़ें।', Markup.inlineKeyboard([[Markup.button.callback('🔙 Back', 'u_home')]]));
+  if (r.rows.length === 0) return safeEdit(ctx, '📢 आपका कोई ग्रुप/चैनल नहीं जुड़ा है।', Markup.inlineKeyboard([[Markup.button.callback('🔙 Back', 'u_home')]]));
   const kb: any[][] = r.rows.map(g => [Markup.button.callback((g.is_active ? '🟢 ' : '🔴 ') + g.title + ' [' + g.approval_status + ']', 'gpanel_' + g.chat_id)]);
   kb.push([Markup.button.callback('🔙 Back', 'u_home')]);
   return safeEdit(ctx, '⚙️ *ग्रुप / चैनल चुनें:*', Markup.inlineKeyboard(kb));
@@ -907,20 +894,17 @@ const renderGroupPanel = async (ctx: any, chatId: number) => {
   if (r.rows.length === 0) return;
   const g = r.rows[0];
   const perm = isGroupAllowedToPost(g);
-  const trialDate = g.trial_ends_at ? new Date(g.trial_ends_at).toLocaleDateString('hi-IN') : 'N/A';
-  const subDate = g.sub_ends_at ? new Date(g.sub_ends_at).toLocaleDateString('hi-IN') : 'Not Active';
 
   const txt =
     '⚙️ *Channel/Group Panel: ' + g.title + '*\n🆔 ID: ' + g.chat_id + ' | 👤 Owner: ' + (g.owner_id || 'N/A') + '\n' +
     '📡 Schedule: *' + (g.is_active ? 'ON 🟢' : 'OFF 🔴') + '* | 🛡 Approval: *' + g.approval_status + '*\n' +
-    '💳 Plan: *' + (perm.ok ? 'ACTIVE ✅ (' + perm.reason + ')' : 'LOCKED ❌ (' + perm.reason + ')') + '*\n' +
-    '📅 30d Trial Ends: *' + trialDate + '* | ⭐ 1-Yr Ends: *' + subDate + '*\n' +
+    '💳 Plan: *' + (perm.ok ? 'ACTIVE ✅' : 'LOCKED ❌') + '*\n' +
     '✍️ Custom Header: *' + (g.custom_caption || 'Default') + '*';
 
   const kb: any[][] = [
     [Markup.button.callback('▶️ Start Current Hour Test', 'gstart_' + chatId), Markup.button.callback('🛑 Pause/Stop Test', 'pause_test_' + chatId)],
     [Markup.button.callback(g.is_active ? '🔕 Turn Schedule OFF' : '🔔 Turn Schedule ON', 'gtog_' + chatId), Markup.button.callback('✍️ Set Custom Caption', 'gcap_' + chatId)],
-    [Markup.button.callback('⭐ Pay 100 Stars (Activate 1 Year Auto)', 'gpay_' + chatId)]
+    [Markup.button.callback('⭐ Pay 100 Stars (Activate 1 Year)', 'gpay_' + chatId)]
   ];
   if (isMaster(ctx.from.id)) {
     kb.push([Markup.button.callback('✅ Approve 30d', 'adm_app_' + chatId), Markup.button.callback('⭐ Grant 1 Yr', 'adm_yr_' + chatId), Markup.button.callback('🚫 Block', 'adm_rej_' + chatId)]);
@@ -937,7 +921,7 @@ bot.action(/^gcap_(-?\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   return safeSend(ctx.chat.id, '✍️ *अपने ग्रुप/चैनल के लिए कस्टम लाइन लिखें:*\n*(रद्द करने के लिए /cancel लिखें)*');
 });
-bot.action(/^gpay_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await ctx.answerCbQuery('Sending 100 Stars Invoice...'); return sendStarsInvoice(ctx.chat?.id || ctx.from.id, cid); });
+bot.action(/^gpay_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await ctx.answerCbQuery('Sending Invoice...'); return sendStarsInvoice(ctx.chat?.id || ctx.from.id, cid); });
 bot.action(/^gstart_(-?\d+)$/, async (ctx) => {
   const cid = Number(ctx.match[1]);
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
@@ -947,38 +931,32 @@ bot.action(/^gstart_(-?\d+)$/, async (ctx) => {
 });
 bot.action(/^pause_test_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await stopTestInGroup(cid, true); await ctx.answerCbQuery('Test Paused!'); });
 
-// MASTER ADMIN PANEL (STRICTLY FOR ADMIN_ID)
+// MASTER ADMIN PANEL
 const renderAdmin = async (ctx: any) => {
-  if (!isMaster(ctx.from.id)) return ctx.reply('🔒 यह मास्टर एडमिन पैनल केवल बॉट के मालिक के लिए सुरक्षित है। (ID: ' + ctx.from.id + ')');
+  if (!isMaster(ctx.from.id)) return ctx.reply('🔒 एडमिन पैनल केवल बॉट मालिक के लिए है। (ID: ' + ctx.from.id + ')');
   const uCnt = (await pool.query('SELECT COUNT(*) FROM users')).rows[0].count;
   const gCnt = (await pool.query('SELECT COUNT(*) FROM channels WHERE is_active=TRUE')).rows[0].count;
-  const pCnt = (await pool.query("SELECT COUNT(*) FROM channels WHERE approval_status='PENDING'")).rows[0].count;
   const qCnt = (await pool.query('SELECT COUNT(*) FROM questions')).rows[0].count;
   const fsubOn = await getCfg('fsub_enabled');
-  const f1 = await getCfg('fsub1_id');
-  const f2 = await getCfg('fsub2_id');
+  const minCheckOn = (await getCfg('min_participants_enabled')) !== 'false';
   const facOn = await getCfg('factory_on');
-  const hasOpenAI = Boolean(process.env.CHATGPT_API_KEY || process.env.OPENAI_API_KEY);
 
   const txt =
     '👑 *PROFESSOR MASTER ADMIN PANEL* 👑\n\n' +
-    '👥 छात्र: *' + uCnt + '* | 📢 एक्टिव ग्रुप्स: *' + gCnt + '* (⏳ Pending: *' + pCnt + '*)\n' +
+    '👥 छात्र: *' + uCnt + '* | 📢 एक्टिव ग्रुप्स: *' + gCnt + '*\n' +
     '📚 कुल प्रमाणित प्रश्न: *' + qCnt + '*\n' +
-    '🤖 AI Engines: *Gemini (4 Models) + ChatGPT (' + (hasOpenAI ? 'Connected ✅' : 'Not Saved ⚠️') + ')*\n' +
-    '📡 Last Seed: ' + lastSeedReport + '\n' +
-    '🔐 Force Sub: *' + (fsubOn === 'true' ? 'ON 🟢' : 'OFF 🔴') + '* (1: ' + (f1 || 'None') + ' | 2: ' + (f2 || 'None') + ')\n' +
-    '⚙️ Auto-Seeder (Every 1m): *' + (facOn === 'true' ? 'RUNNING 🟢' : 'PAUSED 🔴') + '*';
+    '👥 Min 3 Participants Check: *' + (minCheckOn ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
+    '🔐 Force Sub: *' + (fsubOn === 'true' ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
+    '⚙️ Auto-Seeder: *' + (facOn === 'true' ? 'RUNNING 🟢' : 'PAUSED 🔴') + '*';
 
   const kb: any[][] = [
-    [Markup.button.callback('⚡ Seed +10 Questions Now (Gemini/GPT)', 'adm_gen10')],
+    [Markup.button.callback(minCheckOn ? '🔴 Turn Min 3 Check OFF' : '🟢 Turn Min 3 Check ON', 'adm_tog_min')],
+    [Markup.button.callback('⚡ Seed +10 Questions Now', 'adm_gen10')],
     [Markup.button.callback('📢 Broadcast All', 'adm_bc'), Markup.button.callback('📌 Broadcast & Auto-Pin', 'adm_bcpin')],
-    [Markup.button.callback('🎁 Edit ₹100 Gift Card Tagline', 'adm_gift'), Markup.button.callback('💌 Message Winner for Gift Card', 'adm_msg_win')],
-    [Markup.button.callback('🔐 Set FSub 1 (Forward/ID)', 'adm_fsub1'), Markup.button.callback('💬 Set FSub 2 (Forward/ID)', 'adm_fsub2')],
-    [Markup.button.callback(fsubOn === 'true' ? '🔴 Turn Force Sub OFF' : '🟢 Turn Force Sub ON', 'adm_tog_fsub'), Markup.button.callback('📈 Edit 2-Day Promo Text', 'adm_promo')],
-    [Markup.button.callback('🔍 Edit SEO Hashtags', 'adm_seo'), Markup.button.callback(facOn === 'true' ? '⏸ Pause Auto-Seeder' : '▶️ Resume Auto-Seeder', 'adm_tog_fac')],
-    [Markup.button.callback('🚀 Start Test All Groups', 'adm_start_all'), Markup.button.callback('🛑 Stop All Running Tests', 'adm_stop_all')],
-    [Markup.button.callback('🚫 Ban / Unban User', 'adm_ban'), Markup.button.callback('⚙️ Manage All Groups & Owners', 'u_groups')],
-    [Markup.button.callback('🔙 Back to User Menu', 'u_home')]
+    [Markup.button.callback('🎁 Edit Gift Tagline', 'adm_gift'), Markup.button.callback('💌 Message Winner', 'adm_msg_win')],
+    [Markup.button.callback('🔐 Set FSub 1', 'adm_fsub1'), Markup.button.callback('💬 Set FSub 2', 'adm_fsub2')],
+    [Markup.button.callback(fsubOn === 'true' ? '🔴 FSub OFF' : '🟢 FSub ON', 'adm_tog_fsub'), Markup.button.callback('🚀 Start Test All', 'adm_start_all')],
+    [Markup.button.callback('⚙️ Manage Groups & Owners', 'u_groups'), Markup.button.callback('🔙 Back to Menu', 'u_home')]
   ];
   if (ctx.callbackQuery) return safeEdit(ctx, txt, Markup.inlineKeyboard(kb));
   return safeSend(ctx.chat.id, txt, Markup.inlineKeyboard(kb));
@@ -987,19 +965,23 @@ const renderAdmin = async (ctx: any) => {
 bot.command('admin', (ctx) => renderAdmin(ctx));
 bot.action('adm_home', (ctx) => renderAdmin(ctx));
 
+bot.action('adm_tog_min', async (ctx) => {
+  if (!isMaster(ctx.from.id)) return;
+  const curr = (await getCfg('min_participants_enabled')) !== 'false';
+  await setCfg('min_participants_enabled', curr ? 'false' : 'true');
+  await ctx.answerCbQuery('Min 3 Participants Check Updated!');
+  return renderAdmin(ctx);
+});
+
 bot.action('adm_tog_fsub', async (ctx) => { if (!isMaster(ctx.from.id)) return; const c = await getCfg('fsub_enabled'); await setCfg('fsub_enabled', c === 'true' ? 'false' : 'true'); return renderAdmin(ctx); });
 bot.action('adm_tog_fac', async (ctx) => { if (!isMaster(ctx.from.id)) return; const c = await getCfg('factory_on'); await setCfg('factory_on', c === 'true' ? 'false' : 'true'); return renderAdmin(ctx); });
 
 bot.action('adm_gen10', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Generating Questions via Gemini 4x / ChatGPT...');
-  await safeSend(ctx.chat.id, '⏳ *Gemini (4 Models) + ChatGPT Fallback से 10 नए सवाल बनाए जा रहे हैं...*');
+  await ctx.answerCbQuery('Generating Questions...');
+  await safeSend(ctx.chat.id, '⏳ *सवाल बनाए जा रहे हैं...*');
   const r = await generateQuestionsBatch('HISTORY');
-  if (r.ok) {
-    await safeSend(ctx.chat.id, '✅ *सफलता (' + r.provider + ')!*\n📚 विषय: *' + r.sub + '* (' + r.topic + ')\n➕ *' + r.count + ' नए सवाल* डेटाबेस में जुड़ गए!');
-  } else {
-    await safeSend(ctx.chat.id, '❌ *सीडिंग रिपोर्ट:* ' + (r.error || 'Unknown Error') + '\n\n💡 कृपया Render के Environment पेज पर नीचे **"Save, rebuild, and deploy"** बटन ज़रूर दबाएं ताकि आपकी `CHATGPT_API_KEY` एक्टिव हो जाए!');
-  }
+  await safeSend(ctx.chat.id, r.ok ? '✅ ' + r.provider + ' से ' + r.count + ' नए प्रश्न जुड़ गए!' : '❌ जनरेशन विफल: ' + r.error);
   return renderAdmin(ctx);
 });
 
@@ -1015,7 +997,7 @@ bot.action('adm_start_all', async (ctx) => {
 bot.action('adm_stop_all', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
   for (const cid of Array.from(activeTests.keys())) await stopTestInGroup(cid, true);
-  await ctx.answerCbQuery('All tests paused & checkpoints saved!', { show_alert: true });
+  await ctx.answerCbQuery('All tests paused!', { show_alert: true });
 });
 
 bot.action(/^pay_ok_(\d+)$/, async (ctx) => {
@@ -1025,8 +1007,8 @@ bot.action(/^pay_ok_(\d+)$/, async (ctx) => {
   await pool.query('UPDATE users SET wallet_balance = 0, referral_count = 0, last_cleared_at = $1 WHERE telegram_id = $2', [clearDate, targetUid]);
   await pool.query('UPDATE users SET referred_by = NULL WHERE referred_by = $1', [targetUid]).catch(() => {});
   await ctx.answerCbQuery('Marked Paid & Reset!', { show_alert: true });
-  await safeSend(targetUid, '✅ *भुगतान सफल एवं अकाउंट रीसेट!*\nदिनांक *' + clearDate + '* को आपका काउंटर क्लीन कर दिया गया है ताकि आप आज से फिर नए सिरे से रेफ़र करके कमा सकें!');
-  await safeEdit(ctx, '✅ *User ' + targetUid + ' का पेमेंट क्लियर और डेटाबेस रीसेट कर दिया गया (' + clearDate + ')!*');
+  await safeSend(targetUid, '✅ *भुगतान सफल एवं रेफ़रल काउंटर रीसेट!* आज से नए सिरे से कमाई शुरू करें।');
+  await safeEdit(ctx, '✅ *User ' + targetUid + ' का पेमेंट क्लियर और काउंटर रीसेट कर दिया गया (' + clearDate + ')!*');
 });
 
 const promptAdminInput = async (ctx: any, action: string, promptText: string) => {
@@ -1035,17 +1017,14 @@ const promptAdminInput = async (ctx: any, action: string, promptText: string) =>
   await safeSend(ctx.chat.id, promptText + '\n*(रद्द करने के लिए /cancel लिखें)*');
 };
 
-bot.action('adm_bc', (ctx) => promptAdminInput(ctx, 'BC_NORM', '📢 *Broadcast मैसेज भेजें:*'));
-bot.action('adm_bcpin', (ctx) => promptAdminInput(ctx, 'BC_PIN', '📌 *Broadcast & Auto-Pin मैसेज भेजें:*'));
-bot.action('adm_gift', (ctx) => promptAdminInput(ctx, 'SET_GIFT', '🎁 *नया Gift Card Announcement टेक्स्ट लिखें:*'));
-bot.action('adm_promo', (ctx) => promptAdminInput(ctx, 'SET_PROMO', '📈 *हर 2 दिन में जाने वाला नया प्रमोशनल टेक्स्ट लिखें:*'));
-bot.action('adm_seo', (ctx) => promptAdminInput(ctx, 'SET_SEO', '🔍 *नए SEO Hashtags लिखें:*'));
-bot.action('adm_fsub1', (ctx) => promptAdminInput(ctx, 'SET_FSUB1', '🔐 *Main Channel (1) सेटअप:* बॉट को उस चैनल में Admin बनाएं और वहाँ से कोई भी एक पोस्ट यहाँ Forward कर दें (या @username लिखें):'));
-bot.action('adm_fsub2', (ctx) => promptAdminInput(ctx, 'SET_FSUB2', '💬 *Quiz Group/Channel (2) सेटअप:* बॉट को ग्रुप/चैनल में Admin बनाएं और वहाँ से कोई पोस्ट यहाँ Forward कर दें (या @username | Link लिखें):'));
-bot.action('adm_msg_win', (ctx) => promptAdminInput(ctx, 'MSG_WINNER', '💌 *Winner को Gift Card भेजने के लिए लिखें:*\nUSER_ID | बधाई हो! आपका ₹100 Gift Card कोड यहाँ है: XXXX'));
-bot.action('adm_ban', (ctx) => promptAdminInput(ctx, 'BAN_TOGGLE', '🚫 *जिस यूज़र को Ban / Unban करना है, उसकी Telegram ID भेजें:*'));
+bot.action('adm_bc', (ctx) => promptAdminInput(ctx, 'BC_NORM', '📢 *Broadcast:*'));
+bot.action('adm_bcpin', (ctx) => promptAdminInput(ctx, 'BC_PIN', '📌 *Broadcast & Pin:*'));
+bot.action('adm_gift', (ctx) => promptAdminInput(ctx, 'SET_GIFT', '🎁 *Gift Tagline:*'));
+bot.action('adm_fsub1', (ctx) => promptAdminInput(ctx, 'SET_FSUB1', '🔐 *FSub 1:* पोस्ट Forward करें या @username लिखें:'));
+bot.action('adm_fsub2', (ctx) => promptAdminInput(ctx, 'SET_FSUB2', '💬 *FSub 2:* पोस्ट Forward करें या @username लिखें:'));
+bot.action('adm_msg_win', (ctx) => promptAdminInput(ctx, 'MSG_WINNER', '💌 *Winner Message (USER_ID | Text):*'));
 
-bot.command('cancel', (ctx) => { userStates.delete(ctx.from.id); ctx.reply('✅ एक्शन रद्द किया गया।'); });
+bot.command('cancel', (ctx) => { userStates.delete(ctx.from.id); ctx.reply('✅ रद्द किया गया।'); });
 
 bot.on('message', async (ctx) => {
   const st = userStates.get(ctx.from.id);
@@ -1058,8 +1037,7 @@ bot.on('message', async (ctx) => {
     const r = await pool.query('SELECT wallet_balance, referral_count, first_name, username FROM users WHERE telegram_id=$1', [uid]);
     const u = r.rows[0];
     const bal = Number(u?.wallet_balance || 0);
-    const refs = Number(u?.referral_count || 0);
-    if (bal < 99) return safeSend(ctx.chat.id, '❌ आपका बैलेंस ₹99 से कम है।');
+    if (bal < 99) return safeSend(ctx.chat.id, '❌ बैलेंस ₹99 से कम है।');
 
     const clearDate = new Date(Date.now() + 5.5 * 3600 * 1000).toLocaleDateString('hi-IN');
     await pool.query('UPDATE users SET wallet_balance = 0, referral_count = 0, last_cleared_at = $1 WHERE telegram_id = $2', [clearDate, uid]);
@@ -1068,11 +1046,11 @@ bot.on('message', async (ctx) => {
     if (ADMIN_ID) {
       await safeSend(
         ADMIN_ID,
-        '💸 *NEW REFERRAL PAYOUT (₹' + bal + ')* 💸\n👤 नाम: *' + (u.first_name || 'Student') + '* (@' + (u.username || 'N/A') + ')\n🆔 ID: ' + uid + ' | 👥 रेफ़रल: ' + refs + '\n🏦 UPI: *' + upiDetails + '*\n📅 Clear Date: ' + clearDate,
-        Markup.inlineKeyboard([[Markup.button.callback('✅ Confirm Paid & Notify User', 'pay_ok_' + uid)]])
+        '💸 *WITHDRAWAL REQUEST (₹' + bal + ')*\n👤 ' + (u.first_name || 'User') + ' (' + uid + ')\n🏦 UPI: *' + upiDetails + '*',
+        Markup.inlineKeyboard([[Markup.button.callback('✅ Confirm Paid', 'pay_ok_' + uid)]])
       );
     }
-    return safeSend(ctx.chat.id, '✅ *आपकी UPI डिटेल्स (' + upiDetails + ') और ₹' + bal + ' की निकासी रिक्वेस्ट एडमिन को भेज दी गई है!*\n🧹 दिनांक *' + clearDate + '* को आपका रेफ़रल काउंटर रीसेट कर दिया गया है ताकि आप 0 से फिर कमा सकें!');
+    return safeSend(ctx.chat.id, '✅ आपकी रिक्वेस्ट एडमिन को भेज दी गई है!');
   }
 
   if (st.action === 'SET_GRP_CAP' && st.targetId && 'text' in ctx.message) {
@@ -1089,17 +1067,15 @@ bot.on('message', async (ctx) => {
     const pin = st.action === 'BC_PIN';
     const us = await pool.query('SELECT telegram_id FROM users').catch(() => ({ rows: [] }));
     const gs = await pool.query('SELECT chat_id FROM channels WHERE is_active=TRUE').catch(() => ({ rows: [] }));
-    let uOk = 0, gOk = 0;
-    for (const u of us.rows) { try { await ctx.telegram.copyMessage(u.telegram_id, ctx.chat.id, ctx.message.message_id); uOk++; await sleep(80); } catch {} }
+    for (const u of us.rows) { try { await ctx.telegram.copyMessage(u.telegram_id, ctx.chat.id, ctx.message.message_id); await sleep(80); } catch {} }
     for (const g of gs.rows) {
       try {
         const m = await ctx.telegram.copyMessage(g.chat_id, ctx.chat.id, ctx.message.message_id);
-        gOk++;
         if (pin && m.message_id) await ctx.telegram.pinChatMessage(g.chat_id, m.message_id).catch(() => {});
         await sleep(120);
       } catch {}
     }
-    return safeSend(ctx.chat.id, '✅ *Broadcast संपन्न!* (Users: ' + uOk + ', Groups: ' + gOk + ')');
+    return safeSend(ctx.chat.id, '✅ Broadcast Complete!');
   }
 
   if (st.action === 'SET_FSUB1' || st.action === 'SET_FSUB2') {
@@ -1108,72 +1084,42 @@ bot.on('message', async (ctx) => {
     if (msgAny.forward_from_chat) {
       const fChat = msgAny.forward_from_chat;
       cid = String(fChat.id);
-      if (fChat.username) link = 'https://t.me/' + fChat.username;
-      else {
-        try {
-          const chatInfo: any = await ctx.telegram.getChat(cid);
-          link = chatInfo.invite_link || (await ctx.telegram.exportChatInviteLink(cid));
-        } catch {}
-      }
+      link = fChat.username ? 'https://t.me/' + fChat.username : '';
     } else if ('text' in ctx.message) {
       const txt = ctx.message.text.trim();
-      if (txt.includes('|')) { const parts = txt.split('|').map(s => s.trim()); cid = parts[0]; link = parts[1]; }
+      if (txt.includes('|')) { const p = txt.split('|'); cid = p[0].trim(); link = p[1].trim(); }
       else if (txt.startsWith('@')) { cid = txt; link = 'https://t.me/' + txt.replace('@', ''); }
     }
-    if (!cid || !link) return safeSend(ctx.chat.id, '❌ कृपया चैनल में बॉट को Admin बनाकर वहाँ से कोई पोस्ट Forward करें या `@username | https://t.me/link` भेजें।');
+    if (!cid || !link) return safeSend(ctx.chat.id, '❌ कृपया सही पोस्ट Forward करें या @username भेजें।');
     const num = st.action === 'SET_FSUB1' ? '1' : '2';
     await setCfg('fsub' + num + '_id', cid);
     await setCfg('fsub' + num + '_link', link);
     await setCfg('fsub_enabled', 'true');
-    await safeSend(ctx.chat.id, '✅ *Force Sub Channel ' + num + ' सेट हो गया!*\nID: ' + cid + '\nLink: ' + link);
+    await safeSend(ctx.chat.id, '✅ FSub ' + num + ' Set!');
     return renderAdmin(ctx);
   }
 
   if (!('text' in ctx.message)) return;
   const txt = ctx.message.text.trim();
-
-  if (st.action === 'SET_GIFT') { await setCfg('gift_tagline', txt); await safeSend(ctx.chat.id, '✅ Gift Tagline अपडेट हो गई!'); return renderAdmin(ctx); }
-  if (st.action === 'SET_PROMO') { await setCfg('promo_msg', txt); await safeSend(ctx.chat.id, '✅ 2-Day Promo अपडेट हो गया!'); return renderAdmin(ctx); }
-  if (st.action === 'SET_SEO') { await setCfg('seo_tags', txt); await safeSend(ctx.chat.id, '✅ SEO Hashtags अपडेट हो गए!'); return renderAdmin(ctx); }
-  if (st.action === 'BAN_TOGGLE') {
-    const targetUid = Number(txt);
-    if (isNaN(targetUid)) return safeSend(ctx.chat.id, '❌ सही Numeric ID भेजें।');
-    const r = await pool.query('SELECT is_banned FROM users WHERE telegram_id=$1', [targetUid]);
-    const nextBan = !(r.rows[0]?.is_banned === true);
-    await pool.query('UPDATE users SET is_banned=$1 WHERE telegram_id=$2', [nextBan, targetUid]);
-    await safeSend(ctx.chat.id, nextBan ? '🚫 User ' + targetUid + ' को BAN कर दिया गया है!' : '✅ User ' + targetUid + ' को UNBAN कर दिया गया है!');
-    return renderAdmin(ctx);
-  }
+  if (st.action === 'SET_GIFT') { await setCfg('gift_tagline', txt); await safeSend(ctx.chat.id, '✅ Updated!'); return renderAdmin(ctx); }
   if (st.action === 'MSG_WINNER') {
-    const parts = txt.split('|');
-    const uid = parts[0]?.trim();
-    const winMsg = parts.slice(1).join('|').trim();
-    if (!uid || !winMsg) return safeSend(ctx.chat.id, '❌ सही फॉरमेट: 123456789 | आपका गिफ्ट कार्ड...');
-    await safeSend(uid, '🏆 *PROFESSOR QUIZ WINNER REWARD* 🏆\n━━━━━━━━━━━━━━━━━━━━━\n' + winMsg);
-    return safeSend(ctx.chat.id, '✅ टॉपर (' + uid + ') को इनाम का मैसेज भेज दिया गया!');
+    const p = txt.split('|');
+    const uid = p[0]?.trim();
+    const msg = p.slice(1).join('|').trim();
+    if (!uid || !msg) return safeSend(ctx.chat.id, '❌ फॉरमेट: ID | Message');
+    await safeSend(uid, '🏆 *REWARD:* ' + msg);
+    return safeSend(ctx.chat.id, '✅ Sent!');
   }
-});
-
-bot.command('forcepost', async (ctx) => {
-  if (!isMaster(ctx.from.id)) return;
-  const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
-  const sub = getSubjectForHour(ist.getUTCHours());
-  const chs = await pool.query("SELECT chat_id FROM channels WHERE is_active=TRUE AND approval_status='APPROVED'").catch(() => ({ rows: [] }));
-  for (const c of chs.rows) startHourlySubjectTest(Number(c.chat_id), sub, 0);
-  ctx.reply('🚀 सभी ' + chs.rows.length + ' अप्रूव्ड ग्रुप्स/चैनल्स में ' + sub + ' का लाइव टेस्ट शुरू कर दिया गया है!');
 });
 
 const launchBot = async () => {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-    setTimeout(() => {
-      autoResumeOnServerBoot();
-      generateQuestionsBatch();
-    }, 4000);
+    setTimeout(() => { autoResumeOnServerBoot(); generateQuestionsBatch(); }, 4000);
     await bot.launch({ dropPendingUpdates: true });
-    console.log('Professor AI Quiz Bot V5 (Multi-Gemini + ChatGPT) Launched!');
+    console.log('Professor AI Quiz Bot V5.5 Successfully Launched!');
   } catch (e: any) {
-    console.error('Telegram Polling Conflict/Error (Auto-Retrying in 6s):', e?.message || e);
+    console.error('Polling Error:', e?.message);
     setTimeout(launchBot, 6000);
   }
 };
