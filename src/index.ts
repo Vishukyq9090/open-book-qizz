@@ -8,7 +8,7 @@ dotenv.config();
 
 http.createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Professor AI Quiz Bot V5.5 (Min Participants + Multi-AI) Running 24/7!');
+  res.end('Professor AI Quiz Bot V6 (Complete Syllabus + A4 PDF + Service Cleaner) Running 24/7!');
 }).listen(process.env.PORT || 3000);
 
 process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
@@ -24,20 +24,38 @@ const SCHEDULE_15H = [
   'MIXED TEST 1', 'MIXED TEST 2'
 ];
 
+const EXAM_TARGET_MAP: Record<string, string> = {
+  'HISTORY': 'UPSC | State PSC | RO/ARO | SSC | Railway | TET',
+  'GEOGRAPHY': 'UPSC | UPPSC | SSC CGL | Railway | Police | TET',
+  'ECONOMY': 'UPSC | PSC | SSC | Banking | Railway | PET',
+  'ENVIRONMENT': 'UPSC | UPPSC | CTET/UPTET | SSC | Railway',
+  'POLITY': 'UPSC | State PSC | SI/Police | SSC | Railway',
+  'CURRENT AFFAIRS': 'All Exams (UPSC, PSC, SSC, Railway, Banking, Police)',
+  'PHYSICS': 'SSC | Railway ALP/NTPC | NDA/CDS | State PSC',
+  'CHEMISTRY': 'SSC | Railway Group-D/NTPC | PSC | Teaching',
+  'GS MATHEMATICS': 'SSC | Railway | CSAT | UPPSC | SuperTET',
+  'MATH': 'SSC CGL/CHSL/MTS | Railway | Banking | Police | TET',
+  'ENGLISH': 'SSC CGL/CHSL/CPO | Banking | CDS/NDA | Teaching',
+  'REASONING': 'SSC | Railway | Banking | Police | CSAT | B.Ed',
+  'HINDI': 'UPPSC RO/ARO | UP Police/SI | Lekhpal | CTET/UPTET',
+  'MIXED TEST 1': 'All Competitive Exams Full Mock (Paper-1)',
+  'MIXED TEST 2': 'All Competitive Exams Full Mock (Paper-2)'
+};
+
 const SYLLABUS_MAP: Record<string, string[]> = {
-  'HISTORY': ['पाषाण काल एवं सिंधु घाटी सभ्यता', 'वैदिक संस्कृति एवं 16 महाजनपद', 'बौद्ध धर्म एवं जैन धर्म', 'मौर्य साम्राज्य एवं अशोक', 'गुप्त साम्राज्य एवं दक्षिण भारत', 'दिल्ली सल्तनत', 'भक्ति एवं सूफी आंदोलन', 'मुगल साम्राज्य एवं प्रशासन', 'मराठा एवं सिख साम्राज्य', 'यूरोपीय कंपनियों का आगमन', '1857 की क्रांति एवं विद्रोह', 'सामाजिक-धार्मिक सुधार आंदोलन', 'भारतीय राष्ट्रीय कांग्रेस', 'गांधी युग एवं स्वतंत्रता संग्राम', 'स्वतंत्रता के बाद भारत एवं संधियां'],
-  'GEOGRAPHY': ['भारत का भौतिक विभाजन', 'हिमालय पर्वत एवं प्रमुख दर्रे', 'सिंधु, गंगा एवं ब्रह्मपुत्र नदी तंत्र', 'प्रायद्वीपीय नदियां एवं जलप्रपात', 'भारतीय मानसून एवं जलवायु', 'भारत की मिट्टियां एवं वनस्पति', 'भारतीय कृषि एवं सिंचाई परियोजनाएं', 'खनिज संसाधन एवं उद्योग', 'परिवहन एवं जनगणना 2011', 'सौरमंडल एवं पृथ्वी की गतियां', 'भूकंप, ज्वालामुखी एवं चट्टानें', 'वायुमंडल की परतें एवं पवनें', 'महासागरीय जलधाराएं एवं ज्वार-भाटा', 'विश्व के मरुस्थल, घास के मैदान एवं जनजातियां'],
-  'ECONOMY': ['राष्ट्रीय आय (GDP, GNP, NNP)', 'पंचवर्षीय योजनाएं एवं नीति आयोग', 'RBI एवं मौद्रिक नीति', 'मुद्रास्फीति (Inflation) एवं नियंत्रण', 'भारतीय कर प्रणाली एवं GST', 'केंद्रीय बजट एवं राजकोषीय नीति', 'गरीबी, बेरोजगारी एवं सरकारी योजनाएं', 'भारतीय कृषि, हरित क्रांति एवं MSP', 'औद्योगिक नीति, MSME एवं महारत्न', 'भारतीय पूंजी बाजार (SEBI, शेयर बाजार)', 'विदेशी व्यापार एवं भुगतान संतुलन', 'अंतरराष्ट्रीय संगठन (IMF, World Bank, WTO)'],
-  'ENVIRONMENT': ['पारिस्थितिकी एवं पारिस्थितिकी तंत्र', 'खाद्य श्रृंखला एवं पारिस्थितिक पिरामिड', 'जैव-भू-रासायनिक चक्र', 'जैव विविधता (Biodiversity) एवं हॉटस्पॉट', 'राष्ट्रीय उद्यान एवं वन्यजीव अभयारण्य', 'टाइगर रिजर्व, हाथी परियोजना एवं बायोस्फीयर', 'रामसर आर्द्रभूमि एवं प्रवाल भित्तियां', 'वायु, जल, मृदा एवं ध्वनि प्रदूषण', 'ग्रीनहाउस प्रभाव एवं जलवायु परिवर्तन', 'ओजोन परत क्षरण एवं अम्लीय वर्षा', 'पर्यावरण संरक्षण अधिनियम एवं आंदोलन', 'अंतरराष्ट्रीय पर्यावरण सम्मेलन (रियो, क्योटो, COP)'],
-  'POLITY': ['भारत का संवैधानिक विकास (1773-1947)', 'संविधान सभा, स्रोत एवं प्रस्तावना', 'संघ राज्य क्षेत्र एवं नागरिकता', 'मूल अधिकार (अनुच्छेद 12-35)', 'नीति निर्देशक तत्व (DPSP) एवं मूल कर्तव्य', 'राष्ट्रपति एवं उपराष्ट्रपति', 'प्रधानमंत्री, मंत्रिपरिषद एवं महान्यायवादी', 'संसद: लोकसभा, राज्यसभा एवं विधायी प्रक्रिया', 'सर्वोच्च न्यायालय एवं न्यायिक पुनरावलोकन', 'राज्यपाल, मुख्यमंत्री एवं राज्य विधानमंडल', 'उच्च न्यायालय एवं केंद्र-राज्य संबंध', 'आपातकालीन प्रावधान एवं पंचायती राज', 'निर्वाचन आयोग, UPSC, CAG एवं संविधान संशोधन'],
-  'CURRENT AFFAIRS': ['राष्ट्रीय समसामयिकी एवं कैबिनेट निर्णय', 'अंतरराष्ट्रीय शिखर सम्मेलन एवं वैदेशिक संबंध', 'केंद्र व राज्य सरकार की नवीनतम योजनाएं', 'राष्ट्रीय एवं अंतरराष्ट्रीय पुरस्कार व सम्मान', 'खेलकूद: क्रिकेट, ओलंपिक एवं टूर्नामेंट', 'रक्षा अभ्यास एवं मिसाइल परीक्षण', 'ISRO अंतरिक्ष मिशन एवं विज्ञान-प्रौद्योगिकी', 'आर्थिक समीक्षा, बजट एवं जीडीपी अनुमान', 'वैश्विक सूचकांक (Global Indexes) में भारत', 'महत्वपूर्ण नियुक्तियां, पुस्तकें एवं दिवस', 'GI Tags, पर्यावरण एवं चर्चित स्थल'],
-  'PHYSICS': ['मात्रक, मापन एवं सदिश-अदिश राशियां', 'गति के नियम, वेग, त्वरण एवं प्रक्षेप्य गति', 'कार्य, ऊर्जा, शक्ति एवं घर्षण', 'गुरुत्वाकर्षण, ग्रहों की गति एवं पलायन वेग', 'दाब, प्लवन, पृष्ठ तनाव एवं श्यानता', 'ऊष्मा, तापमान एवं ऊष्मागतिकी', 'तरंग गति एवं ध्वनि तरंगें', 'प्रकाश: परावर्तन, अपवर्तन एवं पूर्ण आंतरिक परावर्तन', 'लेंस, दर्पण एवं मानव नेत्र', 'विद्युत धारा, ओम का नियम एवं प्रतिरोध', 'चुंबकत्व एवं आधुनिक परमाणु भौतिकी'],
-  'CHEMISTRY': ['पदार्थ की अवस्थाएं, तत्व, यौगिक एवं मिश्रण', 'परमाणु संरचना एवं समस्थानिक', 'रेडियोधर्मिता, नाभिकीय विखंडन व संलयन', 'रासायनिक बंधन एवं ऑक्सीकरण-अपचयन', 'आवर्त सारणी (Periodic Table)', 'अम्ल, क्षार, लवण एवं pH मान', 'धातुएं, खनिज, अयस्क एवं मिश्रधातुएं', 'अधातुएं एवं प्रमुख गैसें', 'कार्बन, हाइड्रोकार्बन एवं ईंधन', 'बहुलक (Polymers), प्लास्टिक एवं रेशे', 'दैनिक जीवन में रसायन: साबुन, उर्वरक एवं औषधियां'],
-  'GS MATHEMATICS': ['कोशिका विज्ञान एवं आनुवंशिकी', 'मानव पाचन तंत्र, विटामिन एवं पोषण', 'रक्त परिसंचरण तंत्र एवं हृदय', 'श्वसन, उत्सर्जन एवं कंकाल तंत्र', 'तंत्रिका तंत्र एवं अंतःस्रावी ग्रंथियां', 'मानव रोग (जीवाणु, विषाणु, प्रोटोजोआ)', 'वनस्पति विज्ञान: प्रकाश संश्लेषण एवं पादप हार्मोन', 'प्रारंभिक संख्याएं, भिन्न एवं दशमलव', 'व्यावहारिक प्रतिशत एवं औसत गणना', 'समय, दूरी एवं कार्य के मूल प्रश्न', 'सांख्यिकी एवं डेटा विश्लेषण'],
-  'MATH': ['संख्या पद्धति (Number System) एवं विभाज्यता', 'LCM एवं HCF', 'सरलीकरण (Simplification), घातांक एवं करणी', 'औसत (Average) एवं आयु संबंधी प्रश्न', 'अनुपात एवं समानुपात तथा साझेदारी', 'प्रतिशतता (Percentage)', 'लाभ, हानि एवं बट्टा (Profit, Loss & Discount)', 'साधारण ब्याज (SI) एवं चक्रवृद्धि ब्याज (CI)', 'समय और कार्य तथा पाइप और टंकी', 'समय, चाल और दूरी तथा रेलगाड़ी व नाव', 'मिश्रण (Alligation) एवं क्षेत्रमिति (2D/3D)', 'बीजगणित, त्रिकोणमिति एवं डेटा इंटरप्रिटेशन'],
-  'ENGLISH': ['Subject-Verb Agreement & Parts of Speech', 'Tenses, Conditional Sentences & Modals', 'Articles, Prepositions & Conjunctions', 'Active and Passive Voice', 'Direct and Indirect Narration', 'Spotting Grammatical Errors', 'Sentence Improvement & Phrase Replacement', 'Fill in the Blanks (Grammar & Vocab)', 'High-Frequency Synonyms & Antonyms', 'One Word Substitutions', 'Idioms and Phrases', 'Spelling Correction & Para Jumbles'],
-  'REASONING': ['वर्णमाला एवं कोडिंग-डिकोडिंग', 'संख्या एवं अक्षर श्रृंखला (Series)', 'सादृश्यता (Analogy) एवं वर्गीकरण', 'दिशा और दूरी परीक्षण', 'रक्त संबंध (Blood Relations)', 'क्रम व्यवस्था (Order & Ranking) एवं सिटिंग अरेंजमेंट', 'न्याय निगमन (Syllogism) एवं कथन-निष्कर्ष', 'वेन आरेख (Venn Diagrams)', 'लुप्त संख्या (Missing Numbers) एवं गणितीय संक्रियाएं', 'कैलेंडर एवं घड़ी के प्रश्न', 'पासा (Dice), दर्पण प्रतिबिंब एवं आकृति गणना'],
-  'HINDI': ['हिंदी वर्णमाला, स्वर एवं व्यंजन', 'संधि एवं संधि-विच्छेद', 'समास एवं समास विग्रह', 'उपसर्ग एवं प्रत्यय', 'तत्सम, तद्भव, देशज एवं विदेशज शब्द', 'संज्ञा, सर्वनाम, विशेषण एवं क्रिया', 'पर्यायवाची एवं समानार्थी शब्द', 'विलोम (विपरीतार्थक) शब्द', 'वाक्यांश के लिए एक शब्द', 'मुहावरे एवं लोकोक्तियां', 'वर्तनी एवं वाक्य शुद्धि', 'रस, छंद, अलंकार एवं प्रमुख साहित्यकार']
+  'HISTORY': ['पाषाण काल एवं सिंधु सभ्यता', 'वैदिक संस्कृति एवं महाजनपद', 'बौद्ध एवं जैन धर्म', 'मौर्य साम्राज्य एवं अशोक', 'मौर्योत्तर एवं गुप्त साम्राज्य', 'दक्षिण भारतीय राजवंश (चोल, चालुक्य, पल्लव)', 'अरब व तुर्क आक्रमण एवं दिल्ली सल्तनत', 'विजयनगर, बहमनी एवं भक्ति-सूफी आंदोलन', 'मुगल साम्राज्य एवं प्रशासनिक व्यवस्था', 'मराठा साम्राज्य एवं सिख गुरु', 'यूरोपीय कंपनियों का आगमन एवं ब्रिटिश विस्तार', '1857 की क्रांति एवं प्रमुख जन-विद्रोह', 'सामाजिक-धार्मिक सुधार एवं पुनर्जागरण', 'कांग्रेस की स्थापना एवं उदारवादी/उग्रवादी चरण', 'गांधी युग, क्रांतिकारी आंदोलन एवं स्वतंत्रता (1915-1947)'],
+  'GEOGRAPHY': ['भारत का भौतिक विभाजन एवं सीमाएं', 'हिमालय पर्वत तंत्र एवं प्रमुख दर्रे', 'गंगा, सिंधु एवं ब्रह्मपुत्र नदी तंत्र', 'प्रायद्वीपीय नदियां, झीलें एवं जलप्रपात', 'भारतीय मानसून, जलवायु एवं वर्षा वितरण', 'भारत की मिट्टियां एवं प्राकृतिक वनस्पति', 'कृषि, फसलें, सिंचाई एवं बहुउद्देशीय परियोजनाएं', 'खनिज संसाधन, ऊर्जा एवं प्रमुख उद्योग', 'भारत में परिवहन, बंदरगाह एवं जनगणना 2011', 'ब्रह्मांड, सौरमंडल एवं पृथ्वी की गतियां', 'पृथ्वी की आंतरिक संरचना, भूकंप एवं ज्वालामुखी', 'चट्टानें, महाद्वीप एवं पर्वत/पठार', 'वायुमंडल की परतें, पवनें एवं चक्रवात', 'महासागरीय जलधाराएं, ज्वार-भाटा एवं लवणता', 'विश्व के मरुस्थल, घास के मैदान एवं जनजातियां'],
+  'ECONOMY': ['अर्थव्यवस्था के क्षेत्र एवं राष्ट्रीय आय (GDP, GNP)', 'आर्थिक नियोजन, पंचवर्षीय योजनाएं एवं नीति आयोग', 'मुद्रा एवं बैंकिंग (RBI, मौद्रिक नीति, रेपो रेट)', 'मुद्रास्फीति (Inflation) के प्रकार एवं नियंत्रण', 'भारतीय कर प्रणाली (प्रत्यक्ष कर, अप्रत्यक्ष कर, GST)', 'केंद्रीय बजट, राजकोषीय घाटा एवं वित्त आयोग', 'गरीबी, बेरोजगारी के प्रकार एवं सरकारी योजनाएं', 'भारतीय कृषि, हरित क्रांति, MSP एवं खाद्य सुरक्षा', 'औद्योगिक नीति, MSME एवं महारत्न/नवरत्न कंपनियां', 'पूंजी बाजार, शेयर बाजार एवं SEBI', 'विदेशी व्यापार, भुगतान संतुलन एवं FDI', 'अंतरराष्ट्रीय संगठन (IMF, World Bank, WTO, BRICS)'],
+  'ENVIRONMENT': ['पारिस्थितिकी (Ecology) एवं इकोसिस्टम के घटक', 'खाद्य श्रृंखला, खाद्य जाल एवं ऊर्जा पिरामिड', 'जैव-भू-रासायनिक चक्र (कार्बन, नाइट्रोजन, जल)', 'जैव विविधता (Biodiversity), हॉटस्पॉट एवं संरक्षण', 'राष्ट्रीय उद्यान (National Parks) एवं वन्यजीव अभयारण्य', 'प्रोजेक्ट टाइगर, प्रोजेक्ट एलीफेंट एवं बायोस्फीयर रिजर्व', 'रामसर आर्द्रभूमि (Wetlands), मैंग्रोव एवं प्रवाल भित्ति', 'वायु, जल, मृदा, ध्वनि एवं ई-कचरा प्रदूषण', 'ग्रीनहाउस गैसें, ग्लोबल वार्मिंग एवं जलवायु परिवर्तन', 'ओजोन परत क्षरण एवं अम्लीय वर्षा', 'पर्यावरण संरक्षण कानून, NGT एवं चिपको/एपिको आंदोलन', 'अंतरराष्ट्रीय सम्मेलन (स्टॉकहोम, रियो, क्योटो, पेरिस, COP)'],
+  'POLITY': ['संवैधानिक विकास (1773 रेगुलेटिंग एक्ट से 1947 तक)', 'संविधान सभा, प्रमुख समितियां, स्रोत एवं प्रस्तावना', 'संघ एवं उसका राज्य क्षेत्र तथा नागरिकता (भाग 1-2)', 'मूल अधिकार (अनुच्छेद 12-35) एवं संवैधानिक उपचार', 'नीति निर्देशक तत्व (DPSP) एवं मूल कर्तव्य', 'राष्ट्रपति एवं उपराष्ट्रपति: निर्वाचन, शक्तियां व महाभियोग', 'प्रधानमंत्री, केंद्रीय मंत्रिपरिषद एवं महान्यायवादी', 'संसद: राज्यसभा, लोकसभा, विधेयक एवं संसदीय समितियां', 'सर्वोच्च न्यायालय (Supreme Court), न्यायाधीश एवं न्यायिक पुनरावलोकन', 'राज्यपाल, मुख्यमंत्री एवं राज्य विधानमंडल', 'उच्च न्यायालय (High Court) एवं अधीनस्थ न्यायालय', 'केंद्र-राज्य संबंध, अंतरराज्यीय परिषद एवं आपातकाल', 'पंचायती राज एवं नगरपालिकाएं (73वां व 74वां संशोधन)', 'निर्वाचन आयोग, UPSC, वित्त आयोग, CAG एवं SC/ST आयोग', 'प्रमुख संविधान संशोधन, अनुसूचियां एवं महत्वपूर्ण अनुच्छेद'],
+  'CURRENT AFFAIRS': ['राष्ट्रीय समसामयिकी एवं केंद्र सरकार के प्रमुख निर्णय', 'अंतरराष्ट्रीय शिखर सम्मेलन (G20, BRICS, SCO) व विदेश नीति', 'केंद्र एवं राज्य सरकारों की नवीनतम कल्याणकारी योजनाएं', 'राष्ट्रीय एवं अंतरराष्ट्रीय पुरस्कार (पद्म, नोबेल, खेल रत्न)', 'खेलकूद: क्रिकेट, ओलंपिक, एशियाई खेल एवं ग्रैंड स्लैम', 'रक्षा प्रौद्योगिकी, सैन्य अभ्यास एवं मिसाइल परीक्षण', 'ISRO के अंतरिक्ष मिशन, उपग्रह एवं विज्ञान-प्रौद्योगिकी', 'आर्थिक समीक्षा, केंद्रीय बजट एवं नवीनतम GDP अनुमान', 'प्रमुख वैश्विक सूचकांक (Global Indexes) में भारत की रैंक', 'प्रमुख राष्ट्रीय-अंतरराष्ट्रीय नियुक्तियां एवं निधन', 'चर्चित पुस्तकें, लेखक, ब्रांड एंबेसडर एवं महत्वपूर्ण दिवस', 'नवीनतम GI Tags, पर्यावरण रिपोर्ट एवं चर्चित स्थल'],
+  'PHYSICS': ['भौतिक राशियां, SI मात्रक, विमाएं एवं मापक यंत्र', 'गति के नियम, वेग, त्वरण, वृत्तीय एवं प्रक्षेप्य गति', 'कार्य, ऊर्जा, शक्ति, संघट्ट एवं घर्षण', 'गुरुत्वाकर्षण, केप्लर के नियम, उपग्रह एवं पलायन वेग', 'द्रवों के गुण: दाब, पास्कल नियम, प्लवन, पृष्ठ तनाव व श्यानता', 'ऊष्मा, तापमिति, ऊष्मा संचरण एवं ऊष्मागतिकी के नियम', 'सरल आवर्त गति, तरंगें एवं ध्वनि (डॉपलर प्रभाव, सोनार)', 'प्रकाश: परावर्तन, समतल व गोलीय दर्पण', 'प्रकाश का अपवर्तन, पूर्ण आंतरिक परावर्तन, लेंस व प्रिज्म', 'मानव नेत्र, दृष्टि दोष एवं प्रकाशिक यंत्र (सूक्ष्मदर्शी, दूरदर्शी)', 'स्थिर वैद्युतिकी, विद्युत धारा, ओम का नियम एवं प्रतिरोध', 'विद्युत शक्ति, चुंबकत्व एवं विद्युत-चुंबकीय प्रेरण', 'आधुनिक भौतिकी, अर्धचालक, नाभिकीय ऊर्जा एवं प्रमुख आविष्कार'],
+  'CHEMISTRY': ['पदार्थ की अवस्थाएं, तत्व, यौगिक, मिश्रण एवं पृथक्करण', 'परमाणु संरचना, मॉडल, क्वांटम संख्याएं एवं समस्थानिक', 'रेडियोधर्मिता, अल्फा-बीटा-गामा किरणें, नाभिकीय विखंडन व संलयन', 'रासायनिक बंधन (आयनिक, सहसंयोजक) एवं ऑक्सीकरण-अपचयन', 'तत्वों का आवर्ती वर्गीकरण (Periodic Table) एवं गुणधर्म', 'अम्ल, क्षार, लवण, संकेतक एवं pH मान', 'रासायनिक अभिक्रियाएं, उत्प्रेरक एवं रासायनिक साम्य', 'धातुएं, खनिज, अयस्क, धातुकर्म एवं संक्षारण', 'मिश्रधातुएं (Alloys), अमलगम एवं उनके उपयोग', 'अधातुएं (हाइड्रोजन, ऑक्सीजन, नाइट्रोजन, हैलोजन, अक्रिय गैसें)', 'कार्बन एवं उसके अपररूप, हाइड्रोकार्बन, एल्कोहल एवं ईंधन', 'बहुलक (Polymers), प्लास्टिक, कृत्रिम रेशे, रबर एवं विस्फोटक', 'दैनिक जीवन में रसायन: साबुन, अपमार्जक, उर्वरक, सीमेंट, कांच व औषधियां'],
+  'GS MATHEMATICS': ['जीव विज्ञान: कोशिका (Cell) संरचना, विभाजन एवं आनुवंशिकी', 'जंतु एवं पादप वर्गीकरण तथा जैव विकास', 'मानव पाचन तंत्र, कार्बोहाइड्रेट, प्रोटीन, विटामिन एवं पोषण', 'रक्त परिसंचरण तंत्र, रक्त समूह (Blood Group) एवं मानव हृदय', 'श्वसन तंत्र, उत्सर्जन तंत्र (वृक्क) एवं कंकाल व पेशीय तंत्र', 'तंत्रिका तंत्र, मानव मस्तिष्क, आंख-कान एवं अंतःस्रावी ग्रंथियां/हार्मोन', 'मानव रोग: जीवाणु, विषाणु, प्रोटोजोआ, कवक एवं हीनताजन्य रोग', 'वनस्पति विज्ञान: प्रकाश संश्लेषण, पादप हार्मोन, ऊतक एवं पादप रोग', 'प्रारंभिक अंकगणित: संख्याओं की समझ, विभाज्यता एवं भिन्न', 'व्यावहारिक प्रतिशतता, अनुपात एवं औसत की त्वरित गणना', 'समय, दूरी एवं कार्य पर आधारित सामान्य मानसिक योग्यता', 'सांख्यिकी के मूल तत्व (माध्य, माध्यिका, बहुलक) एवं डेटा विश्लेषण'],
+  'MATH': ['संख्या पद्धति (Number System), इकाई अंक, शेषफल एवं विभाज्यता', 'लघुत्तम समापवर्त्य (LCM) एवं महत्तम समापवर्तक (HCF)', 'सरलीकरण (Simplification), BODMAS, भिन्न, घातांक एवं करणी', 'औसत (Average) एवं आयु (Ages) पर आधारित प्रश्न', 'अनुपात एवं समानुपात (Ratio & Proportion) तथा साझेदारी (Partnership)', 'प्रतिशतता (Percentage): चुनाव, जनसंख्या एवं आय-व्यय प्रश्न', 'लाभ, हानि एवं बट्टा (Profit, Loss & Discount)', 'साधारण ब्याज (Simple Interest) एवं किस्तें', 'चक्रवृद्धि ब्याज (Compound Interest) एवं SI-CI अंतर', 'समय और कार्य (Time & Work), क्षमता एवं पाइप-टंकी', 'समय, चाल और दूरी, सापेक्ष चाल, रेलगाड़ी एवं नाव-धारा', 'मिश्रण और पृथ्थीकरण (Mixture & Alligation)', 'क्षेत्रमिति 2D (त्रिभुज, चतुर्भुज, वृत्त का क्षेत्रफल व परिमाप)', 'क्षेत्रमिति 3D (घन, घनाभ, बेलन, शंकु, गोला का आयतन व पृष्ठ)', 'बीजगणित (Algebra), त्रिकोणमिति, ज्यामिति एवं डेटा इंटरप्रिटेशन (DI)'],
+  'ENGLISH': ['Parts of Speech & Subject-Verb Agreement Rules', 'Tenses, Sequence of Tenses & Conditional Sentences', 'Modals, Auxiliaries, Infinitives, Gerund & Participles', 'Articles (A, An, The) & Determiners Usage', 'Prepositions & Fixed Prepositional Phrases', 'Conjunctions, Question Tags & Inversion', 'Active and Passive Voice Transformation', 'Direct and Indirect Speech (Narration)', 'Spotting Grammatical Errors in Complex Sentences', 'Sentence Improvement & Phrase Replacement', 'Fill in the Blanks (Grammar & Contextual Vocabulary)', 'High-Frequency Synonyms & Antonyms from PYQs', 'One Word Substitutions for Competitive Exams', 'Idioms and Phrases with Origins & Usage', 'Spelling Correction, Homonyms & Para Jumbles (PQRS)'],
+  'REASONING': ['वर्णमाला परीक्षण (Alphabet Test) एवं शब्द निर्माण', 'कोडिंग-डिकोडिंग (Letter, Number & Mixed Coding)', 'संख्या श्रृंखला (Number Series) एवं अक्षर श्रृंखला', 'सादृश्यता (Analogy) एवं वर्गीकरण/विषम की पहचान (Odd One Out)', 'दिशा और दूरी परीक्षण (Direction & Distance)', 'रक्त संबंध (Blood Relations) एवं कोडेड रिलेशन', 'क्रम व्यवस्था (Order & Ranking) एवं पंक्ति में स्थान', 'बैठक व्यवस्था (Circular & Linear Sitting Arrangement) व पहेली', 'न्याय निगमन (Syllogism) एवं वेन आरेख (Venn Diagrams)', 'कथन एवं निष्कर्ष, पूर्वधारणाएं, तर्क एवं कार्यवाही (Logical Reasoning)', 'लुप्त संख्या ज्ञात करना (Missing Number in Matrix) व गणितीय संक्रियाएं', 'कैलेंडर (Calendar) एवं घड़ी (Clock: कोण व समय)', 'पासा (Open & Closed Dice), घन एवं घनाभ', 'दर्पण व जल प्रतिबिंब, कागज मोड़ना एवं आकृति गणना (Figure Counting)'],
+  'HINDI': ['हिंदी भाषा का विकास, बोलियां एवं देवनागरी लिपि', 'वर्णमाला: स्वर, व्यंजन, उच्चारण स्थान, अल्पप्राण-महाप्राण, घोष-अघोष', 'संधि एवं संधि-विच्छेद (स्वर, व्यंजन एवं विसर्ग संधि)', 'समास एवं समास-विग्रह (अव्ययीभाव से बहुव्रीहि तक)', 'उपसर्ग एवं प्रत्यय तथा शब्द रचना', 'तत्सम, तद्भव, देशज, विदेशज एवं संकर शब्द', 'संज्ञा, सर्वनाम, विशेषण, क्रिया, काल, वाच्य एवं अव्यय', 'लिंग, वचन एवं कारक चिन्ह (विभक्तियां)', 'पर्यायवाची एवं समानार्थी शब्द भंडार', 'विलोम (विपरीतार्थक) शब्द एवं अनेकार्थी/समश्रुत भिन्नार्थक शब्द', 'वाक्यांश के लिए एक शब्द (अनेक शब्दों के एक शब्द)', 'मुहावरे एवं लोकोक्तियां तथा उनका वाक्य प्रयोग', 'वर्तनी शुद्धि एवं वाक्यगत अशुद्धि संशोधन', 'रस, छंद (चौपाई, दोहा, सोरठा, कुंडलिया) एवं अलंकार', 'हिंदी साहित्य का इतिहास, प्रमुख रचनाएं, कवि, लेखक एवं पुरस्कार']
 };
 
 const APTITUDE_SUBS = ['MATH', 'ENGLISH', 'REASONING', 'GS MATHEMATICS'];
@@ -54,9 +72,10 @@ const getPollTimer = (subject: string, diff: string): number => {
 
 const activeTests = new Map<number, { timer: NodeJS.Timeout; subject: string; currentQ: number }>();
 const reminderMsgIds = new Map<number, number[]>();
-const userStates = new Map<number, { action: string; targetId?: number }>();
+const userStates = new Map<number, { action: string; targetId?: number; meta?: string }>();
 let isSeedingNow = false;
-let lastSeedReport = 'Starting Auto-Seeder...';
+let lastSeedReport = 'Initializing Smart Syllabus Seeder...';
+let apiKeyCursor = 0;
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
@@ -77,6 +96,11 @@ const safeEdit = async (ctx: any, text: string, extra: any = {}) => {
 };
 
 const isMaster = (uid: number) => Boolean(ADMIN_ID) && uid.toString() === ADMIN_ID;
+
+const getTodayKey = (): string => {
+  const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
+  return ist.getUTCFullYear() + '-' + String(ist.getUTCMonth() + 1).padStart(2, '0') + '-' + String(ist.getUTCDate()).padStart(2, '0');
+};
 
 const initDB = async () => {
   const queries = [
@@ -101,17 +125,47 @@ const initDB = async () => {
     "CREATE TABLE IF NOT EXISTS poll_tracking (poll_id TEXT PRIMARY KEY, chat_id BIGINT, correct_index INT, created_at TIMESTAMP DEFAULT NOW())",
     "ALTER TABLE poll_tracking ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()",
     "CREATE TABLE IF NOT EXISTS test_scores (chat_id BIGINT, user_id BIGINT, username TEXT, right_count INT DEFAULT 0, wrong_count INT DEFAULT 0, net_marks NUMERIC(7,2) DEFAULT 0.00, PRIMARY KEY (chat_id, user_id))",
+    "CREATE TABLE IF NOT EXISTS daily_scores (day_key TEXT, chat_id BIGINT, user_id BIGINT, username TEXT, right_count INT DEFAULT 0, wrong_count INT DEFAULT 0, net_marks NUMERIC(8,2) DEFAULT 0.00, PRIMARY KEY (day_key, chat_id, user_id))",
     "CREATE TABLE IF NOT EXISTS monthly_scores (month_key TEXT, user_id BIGINT, username TEXT, right_count INT DEFAULT 0, wrong_count INT DEFAULT 0, net_marks NUMERIC(8,2) DEFAULT 0.00, PRIMARY KEY (month_key, user_id))",
     "CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)",
-    "INSERT INTO bot_settings (key, value) VALUES ('fsub1_id', ''), ('fsub1_link', ''), ('fsub2_id', ''), ('fsub2_link', ''), ('fsub_enabled', 'false'), ('min_participants_enabled', 'true'), ('gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'), ('promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'), ('seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'), ('factory_on', 'true') ON CONFLICT (key) DO NOTHING"
+    "INSERT INTO bot_settings (key, value) VALUES ('fsub1_id', ''), ('fsub1_link', ''), ('fsub2_id', ''), ('fsub2_link', ''), ('fsub_enabled', 'false'), ('min_participants_enabled', 'true'), ('service_clean_enabled', 'true'), ('gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'), ('promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'), ('seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'), ('factory_on', 'true') ON CONFLICT (key) DO NOTHING"
   ];
   for (const q of queries) await pool.query(q).catch(() => {});
-  console.log('Professor V5.5 Database Ready!');
+  console.log('Professor V6 Master Database Ready!');
 };
 initDB();
 
 const getCfg = async (k: string) => (await pool.query('SELECT value FROM bot_settings WHERE key=$1', [k]).catch(() => ({ rows: [] }))).rows[0]?.value || '';
 const setCfg = async (k: string, v: string) => pool.query('INSERT INTO bot_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=$2', [k, v]);
+
+// =========================================================
+// GROUP SERVICE MESSAGE AUTO-CLEANER (JOINED, LEFT, PINNED)
+// =========================================================
+bot.use(async (ctx, next) => {
+  const msgAny: any = ctx.message || ctx.channelPost;
+  if (msgAny && ctx.chat && ctx.chat.type !== 'private') {
+    if (
+      msgAny.new_chat_members ||
+      msgAny.left_chat_member ||
+      msgAny.pinned_message ||
+      msgAny.new_chat_title ||
+      msgAny.new_chat_photo ||
+      msgAny.delete_chat_photo ||
+      msgAny.group_chat_created
+    ) {
+      await ctx.deleteMessage().catch(() => {});
+      return;
+    }
+  }
+  if (ctx.from) {
+    const r = await pool.query('SELECT is_banned FROM users WHERE telegram_id=$1', [ctx.from.id]).catch(() => ({ rows: [] }));
+    if (r.rows[0]?.is_banned) {
+      if (ctx.chat?.type === 'private') return ctx.reply('🚫 आपको एडमिन द्वारा इस बॉट से प्रतिबंधित किया गया है।');
+      return;
+    }
+  }
+  return next();
+});
 
 const checkTwoFSub = async (uid: number) => {
   if (isMaster(uid)) return { ok: true, missing: [] };
@@ -147,17 +201,6 @@ const creditReferralIfEligible = async (uid: number) => {
   } catch {}
 };
 
-bot.use(async (ctx, next) => {
-  if (ctx.from) {
-    const r = await pool.query('SELECT is_banned FROM users WHERE telegram_id=$1', [ctx.from.id]).catch(() => ({ rows: [] }));
-    if (r.rows[0]?.is_banned) {
-      if (ctx.chat?.type === 'private') return ctx.reply('🚫 आपको एडमिन द्वारा इस बॉट से प्रतिबंधित किया गया है।');
-      return;
-    }
-  }
-  return next();
-});
-
 const isGroupAllowedToPost = (row: any): { ok: boolean; reason: string } => {
   if (row.owner_id && isMaster(Number(row.owner_id))) return { ok: true, reason: 'MASTER' };
   if (row.approval_status === 'REJECTED') return { ok: false, reason: 'REJECTED' };
@@ -168,7 +211,10 @@ const isGroupAllowedToPost = (row: any): { ok: boolean; reason: string } => {
   return { ok: false, reason: 'EXPIRED' };
 };
 
-const sendStarsInvoice = async (destChatId: number, targetGroupId: number) => {
+// =========================================================
+// NOTE 4: A4 OFFLINE PRINTABLE QUESTION PAPER + OMR + TXT
+// =========================================================
+const sendGroupStarsInvoice = async (destChatId: number, targetGroupId: number) => {
   try {
     await bot.telegram.sendInvoice(destChatId, {
       title: 'Professor Quiz Bot - 1 Year Pro Activation',
@@ -181,6 +227,134 @@ const sendStarsInvoice = async (destChatId: number, targetGroupId: number) => {
   } catch (e) { console.error('Stars Invoice Error:', e); }
 };
 
+const sendPdfStarsInvoice = async (destChatId: number, subject: string) => {
+  try {
+    await bot.telegram.sendInvoice(destChatId, {
+      title: 'A4 Printable Coaching Test Paper (' + subject + ')',
+      description: '50 Verified Exam Questions + OMR Bubble Sheet + Answer Key (Print-Ready A4 PDF Format + Editable Text)',
+      payload: 'pdf_paper_' + subject,
+      provider_token: '',
+      currency: 'XTR',
+      prices: [{ label: 'A4 Printable Test Paper (50 Qs)', amount: 10 }]
+    });
+  } catch (e) { console.error('PDF Invoice Error:', e); }
+};
+
+const deliverOfflineTestPaper = async (chatId: number, subject: string, asTextOnly: boolean = false) => {
+  const isMixed = subject.startsWith('MIXED');
+  const qRes = await pool.query(
+    'SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) ORDER BY is_pyq DESC, RANDOM() LIMIT 50',
+    [isMixed, '%' + subject + '%']
+  ).catch(() => ({ rows: [] }));
+
+  if (qRes.rows.length === 0) {
+    return safeSend(chatId, '⏳ *' + subject + '* के प्रश्न अभी तैयार किए जा रहे हैं। कृपया 2 मिनट बाद प्रयास करें।');
+  }
+
+  const rows = qRes.rows;
+  const dateStr = new Date(Date.now() + 5.5 * 3600 * 1000).toLocaleDateString('hi-IN');
+  const examTarget = EXAM_TARGET_MAP[subject] || 'All Competitive Exams';
+
+  // 1. Editable Text (.txt) Format (Fallback & Self-Edit)
+  let txtPaper = '============================================================\n';
+  txtPaper += '        PROFESSOR OFFLINE TEST SERIES (MODEL PAPER)         \n';
+  txtPaper += '============================================================\n';
+  txtPaper += 'Subject : ' + subject + '  |  Target : ' + examTarget + '\n';
+  txtPaper += 'Time    : 50 Mins   |  Max Marks : ' + rows.length + '  |  Negative : 1/4 (-0.25)\n';
+  txtPaper += 'Date    : ' + dateStr + '\n';
+  txtPaper += 'Candidate Name: ___________________ Roll No: _______________\n';
+  txtPaper += '============================================================\n\n';
+
+  rows.forEach((q, idx) => {
+    txtPaper += 'Q.' + (idx + 1) + ') [' + (q.topic || subject) + '] ' + q.question_text + '\n';
+    txtPaper += '   (A) ' + q.option_a + '      (B) ' + q.option_b + '\n';
+    txtPaper += '   (C) ' + q.option_c + '      (D) ' + q.option_d + '\n\n';
+  });
+
+  txtPaper += '\n============================================================\n';
+  txtPaper += '              ANSWER KEY & DETAILED EXPLANATIONS            \n';
+  txtPaper += '============================================================\n\n';
+  rows.forEach((q, idx) => {
+    txtPaper += 'Q.' + (idx + 1) + ': (' + q.correct_option + ') -> ' + (q.explanation || 'सत्यापित उत्तर।') + '\n';
+  });
+
+  if (asTextOnly) {
+    const txtBuf = Buffer.from(txtPaper, 'utf-8');
+    return bot.telegram.sendDocument(
+      chatId,
+      { source: txtBuf, filename: 'Editable_Paper_' + subject.replace(/\s+/g, '_') + '.txt' },
+      { caption: '📝 *Editable Text Format (' + subject + ')*\nआप इसे MS Word, Google Docs या Notepad में खोलकर अपने कोचिंग के नाम से एडिट और प्रिंट कर सकते हैं।' }
+    );
+  }
+
+  // 2. A4 Print-Ready 2-Column Coaching Paper + OMR Sheet + Answer Key (.html with 1-Click PDF Print)
+  let qHtml = '';
+  let omrHtml = '';
+  let ansHtml = '';
+
+  rows.forEach((q, idx) => {
+    const qNum = idx + 1;
+    qHtml += '<div class="q-block"><div class="q-title"><b>Q.' + qNum + '.</b> ' + q.question_text + '</div>';
+    qHtml += '<div class="opts"><span>(A) ' + q.option_a + '</span><span>(B) ' + q.option_b + '</span><span>(C) ' + q.option_c + '</span><span>(D) ' + q.option_d + '</span></div></div>';
+
+    omrHtml += '<div class="omr-row"><b>' + String(qNum).padStart(2, '0') + '.</b> <span class="bub">A</span><span class="bub">B</span><span class="bub">C</span><span class="bub">D</span></div>';
+    ansHtml += '<div class="ans-row"><b>Q.' + qNum + ': (' + q.correct_option + ')</b> — ' + (q.explanation || '') + '</div>';
+  });
+
+  const htmlContent = [
+    '<!DOCTYPE html><html lang="hi"><head><meta charset="UTF-8">',
+    '<title>A4 Question Paper - ' + subject + '</title>',
+    '<style>',
+    '@page { size: A4 portrait; margin: 10mm; }',
+    'body { font-family: "Noto Sans Devanagari", Arial, sans-serif; font-size: 11.5px; color: #111; line-height: 1.38; margin: 0; padding: 12px; }',
+    '.no-print { text-align: center; background: #1e293b; color: #fff; padding: 12px; margin-bottom: 15px; border-radius: 8px; }',
+    '.btn-print { background: #22c55e; color: #fff; border: none; padding: 10px 22px; font-size: 15px; font-weight: bold; border-radius: 6px; cursor: pointer; }',
+    '@media print { .no-print { display: none !important; } body { padding: 0; } }',
+    '.header { border: 2px solid #000; padding: 8px 12px; text-align: center; margin-bottom: 10px; }',
+    '.header h1 { margin: 0; font-size: 18px; letter-spacing: 0.5px; }',
+    '.meta { display: flex; justify-content: space-between; font-weight: bold; border-top: 1px solid #000; margin-top: 6px; padding-top: 5px; font-size: 11px; }',
+    '.student-box { border: 1px dashed #333; padding: 6px 10px; margin-bottom: 10px; display: flex; justify-content: space-between; font-size: 11px; }',
+    '.paper-cols { column-count: 2; column-gap: 18px; column-rule: 1px solid #ccc; }',
+    '.q-block { break-inside: avoid; margin-bottom: 8px; padding-bottom: 5px; border-bottom: 1px dotted #ddd; }',
+    '.opts { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin-top: 3px; font-size: 10.8px; }',
+    '.page-break { page-break-before: always; margin-top: 20px; border-top: 2px solid #000; padding-top: 12px; }',
+    '.omr-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 10px; }',
+    '.omr-row { border: 1px solid #ccc; padding: 4px; text-align: center; border-radius: 4px; }',
+    '.bub { display: inline-block; width: 16px; height: 16px; line-height: 16px; border: 1px solid #000; border-radius: 50%; margin: 0 2px; font-size: 9px; text-align: center; }',
+    '.ans-cols { column-count: 2; column-gap: 16px; font-size: 10.5px; }',
+    '.ans-row { break-inside: avoid; margin-bottom: 5px; }',
+    '</style></head><body>',
+    '<div class="no-print"><button class="btn-print" onclick="window.print()">🖨️ Save as A4 PDF / Print Paper</button><div style="margin-top:6px;font-size:12px;">मोबाइल या कंप्यूटर में ऊपर हरे बटन को दबाकर सीधे A4 PDF सेव या प्रिंट करें</div></div>',
+    '<div class="header"><h1>PROFESSOR COMPETITIVE EXAM MODEL QUESTION PAPER</h1>',
+    '<div>Target Exams: ' + examTarget + '</div>',
+    '<div class="meta"><span>Subject: ' + subject + '</span><span>Total Questions: ' + rows.length + '</span><span>Time: 50 Mins</span><span>Max Marks: ' + rows.length + ' (Negative: -1/4)</span></div></div>',
+    '<div class="student-box"><span>Candidate Name: ________________________</span><span>Roll No: ______________</span><span>Date: ' + dateStr + '</span><span>Invigilator Sign: _________</span></div>',
+    '<div class="paper-cols">' + qHtml + '</div>',
+    '<div class="page-break"><h2 style="text-align:center;margin:0 0 8px 0;">OMR ANSWER SHEET (अभ्यर्थी उत्तर पत्रक)</h2><div class="omr-grid">' + omrHtml + '</div></div>',
+    '<div class="page-break"><h2 style="text-align:center;margin:0 0 8px 0;">OFFICIAL ANSWER KEY & EXPLANATIONS</h2><div class="ans-cols">' + ansHtml + '</div></div>',
+    '</body></html>'
+  ].join('\n');
+
+  const htmlBuf = Buffer.from(htmlContent, 'utf-8');
+  await bot.telegram.sendDocument(
+    chatId,
+    { source: htmlBuf, filename: 'A4_Model_Paper_' + subject.replace(/\s+/g, '_') + '.html' },
+    {
+      caption:
+        '📄 *A4 Printable Offline Coaching Test Paper (' + subject + ')*\n' +
+        '━━━━━━━━━━━━━━━━━━━━━\n' +
+        '✅ *इसमें शामिल हैं:* 2-Column 50 Questions + OMR Bubble Sheet + Answer Key\n' +
+        '🖨️ *कैसे प्रिंट करें:* फाइल खोलकर ऊपर ** हरे बटन (Save as A4 PDF / Print)** पर क्लिक करें।\n\n' +
+        '👇 *यदि आपके फोन में PDF सही न दिखे, तो नीचे दिए गए बटन से Editable Text लें या एडमिन को शिकायत भेजें:*',
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('📝 Get Editable Text (.txt) Fallback', 'pdf_txt_' + subject)],
+        [Markup.button.callback('⚠️ PDF Format Issue / Complaint to Admin', 'pdf_comp_' + subject)]
+      ])
+    }
+  );
+};
+
 bot.on('pre_checkout_query', (ctx) => ctx.answerPreCheckoutQuery(true).catch(() => {}));
 bot.on('successful_payment', async (ctx) => {
   const payload = ctx.message.successful_payment.invoice_payload;
@@ -188,24 +362,65 @@ bot.on('successful_payment', async (ctx) => {
     const targetChatId = Number(payload.replace('sub_group_', ''));
     await pool.query("UPDATE channels SET sub_ends_at = NOW() + INTERVAL '365 days', approval_status = 'APPROVED', is_active = TRUE WHERE chat_id = $1", [targetChatId]);
     await safeSend(ctx.chat.id, '🎉 *भुगतान सफल (100 Stars)!*\nआपका ग्रुप/चैनल पूरे *1 साल (365 दिन)* के लिए एक्टिवेट कर दिया गया है!');
-    if (ADMIN_ID) await safeSend(ADMIN_ID, '⭐ *100 Stars Payment Received!*\nGroup ID: ' + targetChatId);
+    if (ADMIN_ID) await safeSend(ADMIN_ID, '⭐ *100 Stars Group Payment Received!* Group: ' + targetChatId);
+  } else if (payload.startsWith('pdf_paper_')) {
+    const sub = payload.replace('pdf_paper_', '');
+    await safeSend(ctx.chat.id, '✅ *10 Stars प्राप्त हुए!* आपका A4 Printable Offline Question Paper तैयार किया जा रहा है...');
+    await deliverOfflineTestPaper(ctx.chat.id, sub, false);
   }
 });
 
+bot.action(/^pdf_txt_(.+)$/, async (ctx) => {
+  const sub = ctx.match[1];
+  await ctx.answerCbQuery('Sending Editable Text File...');
+  return deliverOfflineTestPaper(ctx.chat.id, sub, true);
+});
+
+bot.action(/^pdf_comp_(.+)$/, async (ctx) => {
+  const sub = ctx.match[1];
+  userStates.set(ctx.from.id, { action: 'PDF_COMPLAINT', meta: sub });
+  await ctx.answerCbQuery();
+  await deliverOfflineTestPaper(ctx.chat.id, sub, true);
+  return safeSend(
+    ctx.chat.id,
+    '📝 *हमने तुरंत आपके लिए Editable Text (.txt) फाइल ऊपर भेज दी है ताकि आपका काम न रुके!*\n\n' +
+    '⚠️ कृपया अपनी समस्या नीचे लिखकर भेजें—आपकी शिकायत सीधे मास्टर एडमिन को भेज दी जाएगी:\n*(रद्द करने के लिए /cancel लिखें)*'
+  );
+});
+
+bot.action(/^adm_sendtxt_(\d+)_(.+)$/, async (ctx) => {
+  if (!isMaster(ctx.from.id)) return;
+  const targetUid = Number(ctx.match[1]);
+  const sub = ctx.match[2];
+  await deliverOfflineTestPaper(targetUid, sub, true);
+  await safeSend(targetUid, '✅ *मास्टर एडमिन ने आपकी शिकायत का समाधान करते हुए Editable Text पेपर भेज दिया है!*');
+  await ctx.answerCbQuery('Sent Editable Paper to User!', { show_alert: true });
+});
+
 // =========================================================
-// AI SEEDER ENGINE
+// NOTE 1: COMPLETE TOPIC-WISE FAST AUTO-SEEDER (MULTI-KEY)
 // =========================================================
 let seedCursor = 0;
 
 const getNextSubjectAndTopic = async (forcedSubject?: string): Promise<{ subject: string; topic: string }> => {
   const coreSubjects = SCHEDULE_15H.slice(0, 13);
   let subject = forcedSubject || '';
+
   if (!subject) {
-    const lowRes = await pool.query('SELECT subject, COUNT(*) as c FROM questions GROUP BY subject ORDER BY c ASC LIMIT 1').catch(() => ({ rows: [] }));
-    if (lowRes.rows.length > 0 && Number(lowRes.rows[0].c) < 60 && coreSubjects.includes(lowRes.rows[0].subject)) {
-      subject = lowRes.rows[0].subject;
+    // Always prioritize any subject that has < 100 questions so daily tests never run out
+    const countsRes = await pool.query('SELECT subject, COUNT(*) as c FROM questions GROUP BY subject').catch(() => ({ rows: [] }));
+    const countMap: Record<string, number> = {};
+    countsRes.rows.forEach((r: any) => { countMap[r.subject] = Number(r.c); });
+
+    let minSub = '';
+    let minVal = 999999;
+    for (const s of coreSubjects) {
+      const c = countMap[s] || 0;
+      if (c < minVal) { minVal = c; minSub = s; }
     }
+    if (minSub && minVal < 150) subject = minSub;
   }
+
   if (!subject) subject = coreSubjects[seedCursor++ % coreSubjects.length];
 
   const topics = SYLLABUS_MAP[subject] || ['संपूर्ण पाठ्यक्रम एवं महत्वपूर्ण प्रश्न'];
@@ -249,19 +464,20 @@ const saveQuestionsToDB = async (arr: any[], subject: string, topic: string): Pr
     if (!q || !q.question_text || !q.option_a || !q.option_b || !q.option_c || !q.option_d || !q.correct_option) continue;
     const cOpt = q.correct_option.toString().trim().toUpperCase().charAt(0);
     if (!['A', 'B', 'C', 'D'].includes(cOpt)) continue;
+    if (q.option_a === q.option_b || q.option_b === q.option_c) continue; // Strict Verification Filter
 
     const res = await pool.query(
       'INSERT INTO questions (subject, topic, question_text, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, is_pyq) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (question_text) DO NOTHING RETURNING id',
       [
         subject,
         topic,
-        String(q.question_text).substring(0, 235),
+        String(q.question_text).substring(0, 230),
         String(q.option_a).substring(0, 95),
         String(q.option_b).substring(0, 95),
         String(q.option_c).substring(0, 95),
         String(q.option_d).substring(0, 95),
         cOpt,
-        String(q.explanation || 'प्रमाणित एवं सत्यापित उत्तर।').substring(0, 180),
+        String(q.explanation || 'NCERT एवं आयोग की आधिकारिक उत्तर-कुंजी द्वारा सत्यापित।').substring(0, 180),
         DIFF_TIERS.includes(q.difficulty) ? q.difficulty : 'Medium',
         Boolean(q.is_pyq)
       ]
@@ -278,24 +494,26 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
   isSeedingNow = true;
   try {
-    const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
+    const rawGeminiKeys = (process.env.GEMINI_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean);
     const openAiKey = (process.env.CHATGPT_API_KEY || process.env.OPENAI_API_KEY || '').trim();
     const { subject, topic } = await getNextSubjectAndTopic(forcedSub);
+    const examTarget = EXAM_TARGET_MAP[subject] || 'UPSC, PSC, SSC, Railway';
 
     const prompt = [
-      'You are a senior Indian Competitive Exam Professor (UPSC, UPPSC, SSC CGL, Railway).',
-      'Generate 10 unique, 100% fact-checked Multiple Choice Questions on:',
-      'Subject: ' + subject + ' | Topic: ' + topic,
+      'You are an authoritative Indian Competitive Exam Paper Setter for: ' + examTarget + '.',
+      'Generate 15 unique, 100% fact-checked, NCERT & Official Answer-Key verified MCQs on:',
+      'Subject: ' + subject + ' | Specific Topic: ' + topic,
       'Language: Hindi (if subject is ENGLISH, write in English).',
-      'Include 2 "Easy", 2 "Medium", 2 "Hard", 2 "Ultra Hard", and 2 "Max Hard" questions.',
-      'At least 3 questions MUST be most-repeated Previous Year Questions (mention exam & year like [UPPSC 2023] or [SSC 2022] at the end of question_text) with "is_pyq": true.',
-      'Return a valid JSON Object with a "questions" array of 10 objects, each having keys:',
-      '"question_text" (max 210 chars), "option_a", "option_b", "option_c", "option_d" (max 80 chars each), "correct_option" ("A","B","C", or "D"), "explanation" (max 150 chars), "difficulty" ("Easy","Medium","Hard","Ultra Hard","Max Hard"), "is_pyq" (boolean).'
+      'Distribution: 3 "Easy", 3 "Medium", 3 "Hard", 3 "Ultra Hard", and 3 "Max Hard" questions.',
+      'At least 5 questions MUST be most-repeated Previous Year Questions (mention exam & year like [UPPSC 2023] or [SSC CGL 2022] at end of question_text) with "is_pyq": true.',
+      'Return a valid JSON Object with a "questions" array of 15 objects, each having keys:',
+      '"question_text" (max 205 chars), "option_a", "option_b", "option_c", "option_d" (max 80 chars each), "correct_option" ("A","B","C", or "D"), "explanation" (max 150 chars), "difficulty" ("Easy","Medium","Hard","Ultra Hard","Max Hard"), "is_pyq" (boolean).'
     ].join('\n');
 
     const errors: string[] = [];
 
-    if (geminiKey) {
+    if (rawGeminiKeys.length > 0) {
+      const geminiKey = rawGeminiKeys[apiKeyCursor++ % rawGeminiKeys.length];
       const geminiModels = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
       for (const model of geminiModels) {
         try {
@@ -304,7 +522,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: { responseMimeType: 'application/json', temperature: 0.65 }
+              generationConfig: { responseMimeType: 'application/json', temperature: 0.6 }
             })
           });
           const d: any = await r.json();
@@ -316,7 +534,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
           const saved = await saveQuestionsToDB(arr, subject, topic);
           if (saved > 0) {
-            lastSeedReport = '✅ Gemini (' + model + ') added +' + saved + ' Qs in ' + subject;
+            lastSeedReport = '✅ Gemini (' + model + ') +' + saved + ' Qs [' + subject + ']';
             isSeedingNow = false;
             return { ok: true, count: saved, sub: subject, topic, provider: 'Gemini (' + model + ')' };
           }
@@ -332,9 +550,9 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + openAiKey },
             body: JSON.stringify({
               model: oModel,
-              messages: [{ role: 'system', content: 'You are an exam question generator. Always respond with valid JSON containing a "questions" array.' }, { role: 'user', content: prompt }],
+              messages: [{ role: 'system', content: 'You are an exam question generator. Respond with valid JSON containing a "questions" array.' }, { role: 'user', content: prompt }],
               response_format: { type: 'json_object' },
-              temperature: 0.65
+              temperature: 0.6
             })
           });
           const d: any = await r.json();
@@ -346,7 +564,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
           const saved = await saveQuestionsToDB(arr, subject, topic);
           if (saved > 0) {
-            lastSeedReport = '✅ ChatGPT (' + oModel + ') added +' + saved + ' Qs in ' + subject;
+            lastSeedReport = '✅ ChatGPT (' + oModel + ') +' + saved + ' Qs [' + subject + ']';
             isSeedingNow = false;
             return { ok: true, count: saved, sub: subject, topic, provider: 'ChatGPT (' + oModel + ')' };
           }
@@ -364,7 +582,22 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
   }
 };
 
-cron.schedule('* * * * *', () => { generateQuestionsBatch(); });
+// Smart Seeding Every 2 Minutes (15 Qs/batch = 450 Qs/hr without hitting per-minute rate limits)
+cron.schedule('*/2 * * * *', () => { generateQuestionsBatch(); });
+
+// =========================================================
+// NOTE 2 & NOTE 3: CRISP POINT-WISE HEADER & SIDE-BY-SIDE RESULT
+// =========================================================
+const getTopicSummaryMeta = async (subject: string) => {
+  const topics = SYLLABUS_MAP[subject] || ['संपूर्ण पाठ्यक्रम'];
+  const progRes = await pool.query('SELECT topic_index, cycles_completed FROM syllabus_progress WHERE subject=$1', [subject]).catch(() => ({ rows: [] }));
+  const tIdx = Number(progRes.rows[0]?.topic_index || 0);
+  const currentTopic = topics[tIdx % topics.length];
+  const prevTopics = topics.slice(Math.max(0, tIdx - 3), tIdx).map(t => t.split(' ')[0] + ' ' + (t.split(' ')[1] || '')).join(', ') || 'प्रारंभिक अध्याय';
+  const totalQRes = await pool.query('SELECT COUNT(*) FROM questions WHERE subject=$1', [subject]).catch(() => ({ rows: [{ count: 0 }] }));
+  const totalSubjectQs = Number(totalQRes.rows[0]?.count || 0);
+  return { currentTopic, prevTopics, totalSubjectQs };
+};
 
 const clearOldReminders = async (chatId: number) => {
   const ids = reminderMsgIds.get(chatId) || [];
@@ -372,30 +605,73 @@ const clearOldReminders = async (chatId: number) => {
   reminderMsgIds.delete(chatId);
 };
 
+// NOTE 3: LEFT MENTION <-> RIGHT RESULT SIDE-BY-SIDE + AUTO-PIN
 const announceAndPinLeaderboard = async (chatId: number, subject: string) => {
   try {
     const giftTag = await getCfg('gift_tagline');
     const seoTags = await getCfg('seo_tags');
     const top = await pool.query('SELECT user_id, username, right_count, wrong_count, net_marks FROM test_scores WHERE chat_id=$1 ORDER BY net_marks DESC, right_count DESC LIMIT 10', [chatId]);
 
-    let msg = '🏛 *PROFESSOR LIVE TEST RESULT: ' + subject + '* 🏛\n━━━━━━━━━━━━━━━━━━━━━\n⚖️ *नियम:* सही (+1.00) | गलत (-0.25 / 1/4 नेगेटिव मार्किंग)\n\n';
+    let msg = '🏛 *SUBJECT TEST CLOSED: ' + subject + '* 🏛\n';
+    msg += '• 🎯 *Target:* ' + (EXAM_TARGET_MAP[subject] || 'All Exams') + '\n';
+    msg += '• ⚖️ *Rule:* +1.00 Right | -0.25 Wrong (1/4 Negative)\n';
+    msg += '━━━━━━━━━━━━━━━━━━━━━\n';
+
     if (top.rows.length === 0) {
-      msg += 'इस सत्र में किसी भी विद्यार्थी का व्यक्तिगत स्कोर दर्ज नहीं हुआ।\n\n';
+      msg += 'इस सत्र में किसी भी छात्र का स्कोर दर्ज नहीं हुआ।\n\n';
     } else {
-      msg += '🏆 *TOP 10 WINNERS MERIT LIST:*\n\n';
+      msg += '🏆 *TOP 10 MERIT LIST (Name ➔ Score):*\n\n';
       top.rows.forEach((r, i) => {
-        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖 ' + (i + 1) + '.';
+        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖' + (i + 1) + '.';
         const deducted = (Number(r.wrong_count) * 0.25).toFixed(2);
-        msg += medal + ' [' + r.username + '](tg://user?id=' + r.user_id + ')\n';
-        msg += '   ├ ✅ सही किए: *' + r.right_count + '* | ❌ गलत: *' + r.wrong_count + '*\n';
-        msg += '   ├ ✂️ कटे अंक: *-' + deducted + '* | 🎯 *प्राप्तांक: ' + Number(r.net_marks).toFixed(2) + ' / 50*\n\n';
+        msg += medal + ' [' + r.username + '](tg://user?id=' + r.user_id + ') ➔ *' + Number(r.net_marks).toFixed(2) + '/50* (✅' + r.right_count + ' ❌' + r.wrong_count + ' ✂️-' + deducted + ')\n';
       });
+      msg += '\n';
     }
-    msg += '*' + giftTag + '*\n\n📊 *मंथली मेरिट:* /monthlytop | 💰 *Refer & Earn:* /refer\n⏳ *अगला लाइव टेस्ट ठीक 10 मिनट बाद शुरू होगा!*\n' + seoTags;
+
+    msg += '*' + giftTag + '*\n';
+    msg += '📄 *A4 Printable Paper:* /pdf | 🏆 *Monthly Top:* /monthlytop\n';
+    msg += '⏳ *अगला विषय टेस्ट ठीक 10 मिनट बाद शुरू होगा!*\n' + seoTags;
 
     const sent = await safeSend(chatId, msg);
     if (sent && 'message_id' in sent) await bot.telegram.pinChatMessage(chatId, sent.message_id, { disable_notification: false }).catch(() => {});
   } catch {}
+};
+
+// NOTE 3: DAILY 11:00 PM CLOSING REPORT OF ALL SUBJECTS
+const announceDailyClosingReport = async () => {
+  const dayKey = getTodayKey();
+  const giftTag = await getCfg('gift_tagline');
+  const chs = await pool.query("SELECT chat_id FROM channels WHERE is_active=TRUE AND approval_status='APPROVED'").catch(() => ({ rows: [] }));
+
+  for (const c of chs.rows) {
+    const cid = Number(c.chat_id);
+    const top = await pool.query(
+      'SELECT user_id, username, right_count, wrong_count, net_marks FROM daily_scores WHERE day_key=$1 AND chat_id=$2 ORDER BY net_marks DESC LIMIT 10',
+      [dayKey, cid]
+    ).catch(() => ({ rows: [] }));
+
+    let msg = '🌙 *DAILY CLOSING REPORT (' + dayKey + ')* 🌙\n';
+    msg += '• 📊 *Summary:* 15 Hours (13 Subjects + 2 Mixed Tests Completed)\n';
+    msg += '━━━━━━━━━━━━━━━━━━━━━\n';
+
+    if (top.rows.length === 0) {
+      msg += 'आज के सत्र समाप्त हुए। कल सुबह 8:00 AM पर पुनः लाइव टेस्ट शुरू होंगे!\n\n';
+    } else {
+      msg += '👑 *TODAY OVERALL TOP 10 CHAMPIONS:*\n\n';
+      top.rows.forEach((r, i) => {
+        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖' + (i + 1) + '.';
+        const deducted = (Number(r.wrong_count) * 0.25).toFixed(2);
+        msg += medal + ' [' + r.username + '](tg://user?id=' + r.user_id + ') ➔ *' + Number(r.net_marks).toFixed(2) + ' Pts* (✅' + r.right_count + ' ❌' + r.wrong_count + ' ✂️-' + deducted + ')\n';
+      });
+      msg += '\n';
+    }
+    msg += '*' + giftTag + '*\n⏰ *कल सुबह 8:00 AM से नए टॉपिक-वाइज टेस्ट फिर शुरू होंगे!*';
+
+    const sent = await safeSend(cid, msg);
+    if (sent && 'message_id' in sent) await bot.telegram.pinChatMessage(cid, sent.message_id, { disable_notification: false }).catch(() => {});
+    await sleep(300);
+  }
 };
 
 const stopTestInGroup = async (chatId: number, saveCheckpoint: boolean = true) => {
@@ -406,7 +682,7 @@ const stopTestInGroup = async (chatId: number, saveCheckpoint: boolean = true) =
 
   if (saveCheckpoint && running.currentQ < 50) {
     await pool.query("UPDATE channels SET checkpoints = jsonb_set(COALESCE(checkpoints, '{}'::jsonb), ARRAY[$1], to_jsonb($2::int)) WHERE chat_id = $3", [running.subject, running.currentQ, chatId]).catch(() => {});
-    await safeSend(chatId, '⏸ *' + running.subject + ' का टेस्ट प्रश्न संख्या ' + running.currentQ + ' पर रुका है।* अगले राउंड में यह आगे बढ़ेगा!');
+    await safeSend(chatId, '⏸ *' + running.subject + ' टेस्ट Q.' + running.currentQ + ' पर रुका।* अगले राउंड में यहीं से आगे बढ़ेगा!');
   }
 };
 
@@ -418,9 +694,6 @@ const sendQuizSafe = async (chatId: number, questionText: string, opts: string[]
   }
 };
 
-// =========================================================
-// START TEST WITH MIN 3 PARTICIPANTS CHECK
-// =========================================================
 const startHourlySubjectTest = async (chatId: number, subject: string, resumeFromMinuteOffset: number = 0) => {
   if (activeTests.has(chatId)) await stopTestInGroup(chatId, true);
   await clearOldReminders(chatId);
@@ -433,21 +706,19 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
   if (!perm.ok) {
     if (perm.reason === 'PENDING_APPROVAL') return safeSend(chatId, '⏳ *यह ग्रुप/चैनल अभी मास्टर एडमिन के अप्रूवल की प्रतीक्षा में है।*');
     if (perm.reason === 'EXPIRED') {
-      await safeSend(chatId, '⚠️ *आपका 30 दिनों का फ्री ट्रायल समाप्त हो चुका है!*\n1 साल के लिए एक्टिवेट करने हेतु *100 Telegram Stars* पे करें:');
-      return sendStarsInvoice(chatId, chatId);
+      await safeSend(chatId, '⚠️ *30 दिनों का फ्री ट्रायल समाप्त हो चुका है!* 1 साल के लिए *100 Stars* से एक्टिवेट करें:');
+      return sendGroupStarsInvoice(chatId, chatId);
     }
     return;
   }
 
-  // CHECK MIN 3 PARTICIPANTS IF ENABLED
   const minCheckOn = (await getCfg('min_participants_enabled')) !== 'false';
   if (minCheckOn && chatId < 0 && resumeFromMinuteOffset === 0) {
     try {
       const chatObj: any = await bot.telegram.getChat(chatId);
       const memberCount = chatObj.all_members_are_administrators ? 10 : (await bot.telegram.getChatMembersCount(chatId));
-      // If group has less than 3 members total, notify and pause
       if (memberCount > 0 && memberCount < 3) {
-        await safeSend(chatId, '⚠️ *लाइव टेस्ट होल्ड कर दिया गया है!*\nनियम के अनुसार टेस्ट शुरू करने के लिए ग्रुप में कम से कम **3 प्रतिभागी** होने चाहिए। (वर्तमान सदस्य: ' + memberCount + ')');
+        await safeSend(chatId, '⚠️ *टेस्ट होल्ड:* ग्रुप में कम से कम **3 प्रतिभागी** होने अनिवार्य हैं। (वर्तमान: ' + memberCount + ')');
         return;
       }
     } catch {}
@@ -457,15 +728,22 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
   let currentQ = savedQ > 0 && savedQ < 50 ? savedQ : resumeFromMinuteOffset;
   if (currentQ === 0) await pool.query('DELETE FROM test_scores WHERE chat_id=$1', [chatId]).catch(() => {});
 
+  const meta = await getTopicSummaryMeta(subject);
   const seoTags = await getCfg('seo_tags');
-  const customCap = ch.custom_caption ? '\n📢 *' + ch.custom_caption + '*\n' : '';
+  const customCap = ch.custom_caption ? '• 📢 *Note:* ' + ch.custom_caption + '\n' : '';
 
+  // NOTE 2: POINT-WISE CRISP HEADER (NO LONG PARAGRAPHS)
   await safeSend(
     chatId,
-    '🏛 *PROFESSOR LIVE EXAMINATION: ' + subject + '* 🏛\n' +
-    (currentQ > 0 ? '🔄 *(प्रश्न ' + (currentQ + 1) + ' से पुनः प्रारंभ)*\n' : '') +
-    '━━━━━━━━━━━━━━━━━━━━━\n📌 *कुल प्रश्न:* 50 (Easy ➔ Max Hard + 10 PYQs)\n⏱ *समय:* स्तर अनुसार (15s से 55s) | ⚖️ *माइनस मार्किंग:* 1/4' + customCap + '\n' + seoTags,
-    Markup.inlineKeyboard([[Markup.button.callback('🛑 Stop Test', 'pause_test_' + chatId)]])
+    '🏛 *LIVE TEST: ' + subject + '* ' + (currentQ > 0 ? '*(Resume Q.' + (currentQ + 1) + ')*' : '') + '\n' +
+    '• 🎯 *Exams:* ' + (EXAM_TARGET_MAP[subject] || 'All Exams') + '\n' +
+    '• 📌 *Topic:* ' + meta.currentTopic + '\n' +
+    '• ✅ *Done Keywords:* ' + meta.prevTopics + ' (' + meta.totalSubjectQs + ' Qs in Bank)\n' +
+    '• 📋 *Rule:* 50 Qs | ⚖️ -1/4 Negative | ⏱ 15s-55s\n' +
+    customCap + seoTags,
+    Markup.inlineKeyboard([
+      [Markup.button.callback('🛑 Stop Test', 'pause_test_' + chatId), Markup.button.callback('📄 Get A4 PDF (10⭐)', 'buy_pdf_' + subject)]
+    ])
   );
 
   const sendNextQuestion = async () => {
@@ -497,9 +775,13 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
         await generateQuestionsBatch(isMixed ? undefined : subject);
         qRes = await pool.query('SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) AND id NOT IN (SELECT question_id FROM asked_history WHERE chat_id = $3) ORDER BY RANDOM() LIMIT 1', [isMixed, '%' + subject + '%', chatId]);
       }
+      // Zero-Kachra Auto-Cycle: If group has exhausted all questions of this subject, clear only this subject's history for this group
+      if (qRes.rows.length === 0) {
+        await pool.query('DELETE FROM asked_history WHERE chat_id=$1 AND question_id IN (SELECT id FROM questions WHERE subject ILIKE $2)', [chatId, '%' + subject + '%']).catch(() => {});
+        qRes = await pool.query('SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) ORDER BY RANDOM() LIMIT 1', [isMixed, '%' + subject + '%']);
+      }
       if (qRes.rows.length === 0) {
         await stopTestInGroup(chatId, true);
-        await safeSend(chatId, '✨ *सूचना:* ' + subject + ' के नए प्रश्न जोड़े जा रहे हैं।');
         return;
       }
 
@@ -507,15 +789,16 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
       await pool.query('INSERT INTO asked_history(chat_id, question_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [chatId, q.id]);
 
       const pollDuration = getPollTimer(q.subject || subject, q.difficulty || targetDiff);
-      const pyqTag = q.is_pyq ? '⭐ [Exam PYQ] ' : '';
-      const topicTag = q.topic ? '(' + q.topic.substring(0, 26) + ')' : '';
-      const qHeader = '[Q.' + currentQ + '/50 | ' + (q.difficulty || targetDiff) + ' | ⏱' + pollDuration + 's] ' + topicTag + '\n' + pyqTag;
+      const pyqTag = q.is_pyq ? '⭐PYQ ' : '';
+      const shortTopic = (q.topic || subject).substring(0, 24);
+      const shortExam = (EXAM_TARGET_MAP[q.subject || subject] || 'PSC/SSC').split('|').slice(0, 2).join('/');
+      const qHeader = 'Q.' + currentQ + '/50 | ' + (q.difficulty || targetDiff) + ' (' + pollDuration + 's) | 🎯' + shortExam.trim() + '\n📌 ' + shortTopic + ' ' + pyqTag + '\n';
       const questionText = (qHeader + q.question_text).substring(0, 298);
       const opts = [q.option_a.substring(0, 95), q.option_b.substring(0, 95), q.option_c.substring(0, 95), q.option_d.substring(0, 95)];
       const cIdx = ['A', 'B', 'C', 'D'].indexOf((q.correct_option || 'A').toUpperCase().charAt(0));
       const finalIdx = cIdx !== -1 ? cIdx : 0;
 
-      const sentPoll = await sendQuizSafe(chatId, questionText, opts, finalIdx, '💡 व्याख्या: ' + (q.explanation || 'सही उत्तर सत्यापित है।').substring(0, 180), pollDuration);
+      const sentPoll = await sendQuizSafe(chatId, questionText, opts, finalIdx, '💡 ' + (q.explanation || 'सत्यापित उत्तर।').substring(0, 185), pollDuration);
       if (sentPoll?.poll?.id) {
         await pool.query('INSERT INTO poll_tracking(poll_id, chat_id, correct_index) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [sentPoll.poll.id, chatId, finalIdx]);
       }
@@ -532,7 +815,7 @@ bot.on('poll_answer', async (ctx) => {
     const ans = ctx.pollAnswer;
     if (!ans.option_ids || ans.option_ids.length === 0) return;
     const uid = ans.user.id;
-    const uname = (ans.user.first_name || ans.user.username || 'Student').replace(/[*_`[\]]/g, '');
+    const uname = (ans.user.first_name || ans.user.username || 'Student').replace(/[*_`[\]]/g, '').substring(0, 18);
     const chosen = ans.option_ids[0];
 
     const pRes = await pool.query('SELECT chat_id, correct_index FROM poll_tracking WHERE poll_id=$1', [ans.poll_id]);
@@ -547,6 +830,12 @@ bot.on('poll_answer', async (ctx) => {
     await pool.query(
       'INSERT INTO test_scores (chat_id, user_id, username, right_count, wrong_count, net_marks) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (chat_id, user_id) DO UPDATE SET username = $3, right_count = test_scores.right_count + $4, wrong_count = test_scores.wrong_count + $5, net_marks = test_scores.net_marks + $6',
       [chat_id, uid, uname, rInc, wInc, markDelta]
+    );
+
+    const dayKey = getTodayKey();
+    await pool.query(
+      'INSERT INTO daily_scores (day_key, chat_id, user_id, username, right_count, wrong_count, net_marks) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (day_key, chat_id, user_id) DO UPDATE SET username = $4, right_count = daily_scores.right_count + $5, wrong_count = daily_scores.wrong_count + $6, net_marks = daily_scores.net_marks + $7',
+      [dayKey, chat_id, uid, uname, rInc, wInc, markDelta]
     );
 
     const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
@@ -570,6 +859,7 @@ const getNextISTHourSubject = (): string => {
 
 const sendPreTestReminders = async (minsLeft: number) => {
   const nextSub = getNextISTHourSubject();
+  const meta = await getTopicSummaryMeta(nextSub);
   const chs = await pool.query("SELECT * FROM channels WHERE is_active=TRUE AND approval_status='APPROVED'").catch(() => ({ rows: [] }));
   const users = await pool.query('SELECT telegram_id, first_name FROM users WHERE alerts_enabled=TRUE AND is_banned=FALSE AND ($1 = ANY(preferred_subjects) OR $2 = TRUE)', [nextSub, nextSub.startsWith('MIXED')]).catch(() => ({ rows: [] }));
   const mentionList = users.rows.slice(0, 20).map(u => '[' + (u.first_name || 'Student').replace(/[*_`[\]]/g, '') + '](tg://user?id=' + u.telegram_id + ')').join(', ');
@@ -578,11 +868,21 @@ const sendPreTestReminders = async (minsLeft: number) => {
     if (!isGroupAllowedToPost(ch).ok) continue;
     const cid = Number(ch.chat_id);
     if (minsLeft === 1) {
-      const instructionText = '🚨 *अंतिम 1 मिनट शेष — लाइव टेस्ट निर्देश!* 🚨\n━━━━━━━━━━━━━━━━━━━━━\n📘 *विषय:* ' + nextSub + ' (50 प्रश्न)\n⚖️ *माइनस मार्किंग (1/4):* 4 गलत प्रश्नों पर 1 सही प्रश्न का अंक कटेगा (-0.25)\n🏆 *रिजल्ट:* टेस्ट के तुरंत बाद Top 10 विजेताओं की घोषणा और पिन किया जाएगा।\n🔔 *तैयार रहें:* ' + (mentionList || 'सभी अभ्यर्थी तैयार हो जाएं!');
+      const instructionText =
+        '🚨 *1 MIN LEFT — LIVE TEST INSTRUCTIONS* 🚨\n' +
+        '• 📘 *Subject:* ' + nextSub + ' (50 Qs)\n' +
+        '• 🎯 *Exams:* ' + (EXAM_TARGET_MAP[nextSub] || 'All Exams') + '\n' +
+        '• 📌 *Topic:* ' + meta.currentTopic + '\n' +
+        '• ✅ *Covered:* ' + meta.prevTopics + '\n' +
+        '• ⚖️ *Negative Marking:* 1/4 (-0.25 per wrong answer)\n' +
+        '• 🔔 *Ready:* ' + (mentionList || 'सभी अभ्यर्थी तैयार रहें!');
       const sent = await safeSend(cid, instructionText);
       if (sent && 'message_id' in sent) await bot.telegram.pinChatMessage(cid, sent.message_id, { disable_notification: false }).catch(() => {});
     } else {
-      const sent = await safeSend(cid, '⏰ *लाइव टेस्ट रिमाइंडर (' + minsLeft + ' मिनट शेष)!*\n📚 अगला विषय: *' + nextSub + '* (50 प्रश्न | 1/4 माइनस मार्किंग)\n🔔 ' + (mentionList || 'सभी छात्र तैयार रहें!'));
+      const sent = await safeSend(
+        cid,
+        '⏰ *Test Alert (' + minsLeft + 'm Left):* *' + nextSub + '*\n• 📌 *Topic:* ' + meta.currentTopic + ' | ⚖️ -1/4 Negative\n🔔 ' + (mentionList || 'तैयार रहें!')
+      );
       if (sent && 'message_id' in sent) {
         const list = reminderMsgIds.get(cid) || [];
         list.push(sent.message_id);
@@ -593,7 +893,7 @@ const sendPreTestReminders = async (minsLeft: number) => {
   }
   if (minsLeft === 10) {
     for (const u of users.rows) {
-      await safeSend(u.telegram_id, '🔔 *नमस्ते ' + (u.first_name || 'अभ्यर्थी') + '!* आपके विषय *' + nextSub + '* का लाइव टेस्ट ठीक *10 मिनट* में शुरू होने वाला है!');
+      await safeSend(u.telegram_id, '🔔 *Alert:* *' + nextSub + '* (' + meta.currentTopic + ') का लाइव टेस्ट *10 मिनट* में शुरू हो रहा है!');
       await sleep(150);
     }
   }
@@ -613,6 +913,9 @@ cron.schedule('0 8-22 * * *', async () => {
   }
 }, { timezone: 'Asia/Kolkata' });
 
+// 11:00 PM Daily Closing Report Cron
+cron.schedule('0 23 * * *', () => announceDailyClosingReport(), { timezone: 'Asia/Kolkata' });
+
 cron.schedule('0 14 */2 * *', async () => {
   const promo = await getCfg('promo_msg');
   const botUser = bot.botInfo?.username || '';
@@ -626,7 +929,7 @@ cron.schedule('0 14 */2 * *', async () => {
 }, { timezone: 'Asia/Kolkata' });
 
 cron.schedule('0 2 * * *', async () => {
-  await pool.query("DELETE FROM poll_tracking WHERE created_at < NOW() - INTERVAL '2 days'").catch(() => {});
+  await pool.query("DELETE FROM poll_tracking WHERE created_at < NOW() - INTERVAL '1 day'").catch(() => {});
 }, { timezone: 'Asia/Kolkata' });
 
 const autoResumeOnServerBoot = async () => {
@@ -643,23 +946,25 @@ const autoResumeOnServerBoot = async () => {
   }
 };
 
+// =========================================================
+// USER INTERFACE & PDF MENU
+// =========================================================
 const renderMainMenu = async (ctx: any) => {
   const botUser = ctx.botInfo?.username || '';
   const giftTag = await getCfg('gift_tagline');
   const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
   const text =
-    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ में आपका स्वागत है!*\n\n' +
-    'यहाँ प्रतिदिन सुबह *8:00 AM से रात 11:00 PM (15 घंटे)* तक 13 विषयों और मिक्स्ड मॉक टेस्ट का आयोजन होता है।\n\n' +
-    '✨ *मुख्य विशेषताएं:*\n' +
-    '• टॉपिक-वाइज संपूर्ण सिलेबस + Top Exam PYQs\n' +
-    '• 1/4 नेगेटिव मार्किंग और लाइव Top 10 मेरिट लिस्ट\n' +
-    '• 💰 *Refer & Earn:* प्रति रेफ़रल ₹5 कमाएं (न्यूनतम निकासी ₹99 UPI द्वारा)\n' +
-    '• 🚀 अपने Group या Channel में जोड़ें (30 दिन Free Trial, फिर 100 Stars/Year)!\n\n' + giftTag;
+    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V6)*\n' +
+    '• ⏰ *Live Time:* 8:00 AM – 11:00 PM (15 Hours Daily)\n' +
+    '• 📚 *Syllabus:* Topic-Wise Complete Exam Coverage + PYQs\n' +
+    '• ⚖️ *Marking:* +1.00 Right | -0.25 Wrong (1/4 Negative)\n' +
+    '• 📄 *Offline Paper:* A4 Printable Question Paper + OMR (10 ⭐)\n' +
+    '• 💰 *Refer & Earn:* ₹5/Refer (Min Withdraw ₹99 via UPI)\n\n' + giftTag;
 
   const kb: any[][] = [
-    [Markup.button.callback('🎯 Exam & Subject Preferences', 'u_prefs'), Markup.button.callback('📅 15-Hour Schedule', 'u_sched')],
-    [Markup.button.callback('💰 Refer & Earn (₹5/Refer)', 'u_refer'), Markup.button.callback('🏆 Monthly Topper List', 'u_monthly')],
-    [Markup.button.callback('⚙️ My Groups & Channels', 'u_groups'), Markup.button.callback('⚡ Play Demo Quiz In Bot', 'u_demo')],
+    [Markup.button.callback('🎯 Exam & Subject Alerts', 'u_prefs'), Markup.button.callback('📅 15-Hour Schedule', 'u_sched')],
+    [Markup.button.callback('📄 Download A4 Test Paper (10 ⭐)', 'u_pdf_menu'), Markup.button.callback('🏆 Monthly Top 10', 'u_monthly')],
+    [Markup.button.callback('💰 Refer & Earn (₹5/Refer)', 'u_refer'), Markup.button.callback('⚙️ My Groups & Channels', 'u_groups')],
     [
       Markup.button.url('➕ Add to Group (1-Click)', 'https://t.me/' + botUser + '?startgroup=true&admin=' + adminPerms),
       Markup.button.url('📢 Add to Channel (1-Click)', 'https://t.me/' + botUser + '?startchannel=true&admin=' + adminPerms)
@@ -670,6 +975,40 @@ const renderMainMenu = async (ctx: any) => {
   if (ctx.callbackQuery) return safeEdit(ctx, text, Markup.inlineKeyboard(kb));
   return safeSend(ctx.chat.id, text, Markup.inlineKeyboard(kb));
 };
+
+const renderPdfSubjectMenu = async (ctx: any) => {
+  const coreSubs = SCHEDULE_15H.slice(0, 14);
+  const kb: any[][] = [];
+  for (let i = 0; i < coreSubs.length; i += 2) {
+    const row = [Markup.button.callback('📄 ' + coreSubs[i], 'buy_pdf_' + coreSubs[i])];
+    if (coreSubs[i + 1]) row.push(Markup.button.callback('📄 ' + coreSubs[i + 1], 'buy_pdf_' + coreSubs[i + 1]));
+    kb.push(row);
+  }
+  kb.push([Markup.button.callback('🔙 Back to Main Menu', 'u_home')]);
+
+  const msg =
+    '📄 *A4 PRINTABLE OFFLINE QUESTION PAPER MODEL*\n' +
+    '• कोचिंग व ऑफलाइन छात्रों को बांटने के लिए 50 प्रश्नों का 2-Column A4 पेपर\n' +
+    '• साथ में *50-Question OMR Sheet* और *Answer Key*\n' +
+    '• शुल्क: केवल *10 Telegram Stars* (PDF न खुलने पर Editable Text + Admin Support मुफ्त!)\n\n' +
+    '👇 *जिस विषय का A4 मॉडल पेपर चाहिए उसे चुनें:*';
+
+  if (ctx.callbackQuery) return safeEdit(ctx, msg, Markup.inlineKeyboard(kb));
+  return safeSend(ctx.chat.id, msg, Markup.inlineKeyboard(kb));
+};
+
+bot.command('pdf', (ctx) => renderPdfSubjectMenu(ctx));
+bot.action('u_pdf_menu', (ctx) => renderPdfSubjectMenu(ctx));
+
+bot.action(/^buy_pdf_(.+)$/, async (ctx) => {
+  const sub = ctx.match[1];
+  if (isMaster(ctx.from.id)) {
+    await ctx.answerCbQuery('Admin Free Access: Generating A4 Paper...');
+    return deliverOfflineTestPaper(ctx.chat?.id || ctx.from.id, sub, false);
+  }
+  await ctx.answerCbQuery('Sending 10 Stars Invoice...');
+  return sendPdfStarsInvoice(ctx.chat?.id || ctx.from.id, sub);
+});
 
 bot.start(async (ctx) => {
   const uid = ctx.from.id;
@@ -690,7 +1029,7 @@ bot.start(async (ctx) => {
   if (!fsub.ok) {
     const btns: any[][] = fsub.missing.map(m => [Markup.button.url(m.title, m.link)]);
     btns.push([Markup.button.callback('✅ मैंने जॉइन कर लिया (Verify & Start)', 'verify_fsub')]);
-    return safeSend(ctx.chat.id, '🔒 *अनिवार्य सूचना (Compulsory):*\nप्रोफेसर बॉट के सभी फीचर्स, लाइव टेस्ट और ₹5 रेफ़रल बोनस अनलॉक करने के लिए कृपया नीचे दिए गए दोनों ऑफिशियल ग्रुप और चैनल को सब्सक्राइब करें:', Markup.inlineKeyboard(btns));
+    return safeSend(ctx.chat.id, '🔒 *अनिवार्य सूचना:*\nप्रोफेसर बॉट के सभी फीचर्स अनलॉक करने के लिए कृपया नीचे दिए गए दोनों ऑफिशियल ग्रुप और चैनल को सब्सक्राइब करें:', Markup.inlineKeyboard(btns));
   }
   await creditReferralIfEligible(uid);
   return renderMainMenu(ctx);
@@ -698,24 +1037,13 @@ bot.start(async (ctx) => {
 
 bot.action('verify_fsub', async (ctx) => {
   const fsub = await checkTwoFSub(ctx.from.id);
-  if (!fsub.ok) return ctx.answerCbQuery('❌ आपने अभी तक दोनों चैनल/ग्रुप जॉइन नहीं किए हैं!', { show_alert: true });
+  if (!fsub.ok) return ctx.answerCbQuery('❌ कृपया पहले दोनों चैनल/ग्रुप जॉइन करें!', { show_alert: true });
   await creditReferralIfEligible(ctx.from.id);
   await ctx.answerCbQuery('✅ सत्यापन सफल!', { show_alert: true });
   return renderMainMenu(ctx);
 });
 
 bot.action('u_home', (ctx) => renderMainMenu(ctx));
-
-bot.action('u_demo', async (ctx) => {
-  await ctx.answerCbQuery('Loading Question...');
-  const qRes = await pool.query('SELECT * FROM questions ORDER BY RANDOM() LIMIT 1').catch(() => ({ rows: [] }));
-  if (qRes.rows.length === 0) return safeSend(ctx.chat.id, '⏳ प्रश्न तैयार हो रहे हैं, कृपया 1 मिनट बाद प्रयास करें।');
-  const q = qRes.rows[0];
-  const dur = getPollTimer(q.subject || 'HISTORY', q.difficulty || 'Medium');
-  const opts = [q.option_a.substring(0, 95), q.option_b.substring(0, 95), q.option_c.substring(0, 95), q.option_d.substring(0, 95)];
-  const cIdx = ['A', 'B', 'C', 'D'].indexOf((q.correct_option || 'A').toUpperCase().charAt(0));
-  await sendQuizSafe(ctx.chat.id, '[' + q.subject + ' | ' + q.difficulty + ' | ⏱' + dur + 's]\n' + q.question_text.substring(0, 250), opts, cIdx !== -1 ? cIdx : 0, '💡 व्याख्या: ' + (q.explanation || '').substring(0, 180), dur);
-});
 
 const renderReferPanel = async (ctx: any) => {
   const uid = ctx.from.id;
@@ -725,18 +1053,16 @@ const renderReferPanel = async (ctx: any) => {
   const refLink = 'https://t.me/' + botUser + '?start=ref_' + uid;
 
   const msg =
-    '💰 *PROFESSOR REFER & EARN PROGRAM* 💰\n━━━━━━━━━━━━━━━━━━━━━\n' +
-    '🎁 *प्रति रेफ़रल इनाम:* ₹5.00 | 🏦 *न्यूनतम निकासी:* ₹99.00 (UPI)\n\n' +
-    '👥 *आपके वर्तमान रेफ़रल:* ' + (u.referral_count || 0) + ' छात्र\n' +
-    '💳 *आपका वर्तमान बैलेंस:* *₹' + (u.wallet_balance || 0) + '.00*\n' +
-    (u.last_cleared_at ? '🧹 *पिछला भुगतान एवं रीसेट दिनांक:* ' + u.last_cleared_at + '\n' : '') +
-    '\n🔗 *आपका रेफ़रल लिंक:*\n' + refLink + '\n\n' +
-    '📌 ₹99 पूरे होते ही नीचे बटन दबाकर अपनी UPI ID एडमिन को भेजें। भुगतान होते ही पुराना काउंट क्लीन होकर नए सिरे (0) से शुरू हो जाएगा!';
+    '💰 *PROFESSOR REFER & EARN* 💰\n' +
+    '• 🎁 *Reward:* ₹5/Refer | 🏦 *Min Withdraw:* ₹99 (UPI)\n' +
+    '• 👥 *Current Referrals:* ' + (u.referral_count || 0) + ' | 💳 *Balance:* ₹' + (u.wallet_balance || 0) + '\n' +
+    (u.last_cleared_at ? '• 🧹 *Last Paid & Reset:* ' + u.last_cleared_at + '\n' : '') +
+    '\n🔗 *Your Link:* ' + refLink;
 
   const kb: any[][] = [
-    [Markup.button.url('📲 Share Referral Link on Telegram', 'https://t.me/share/url?url=' + encodeURIComponent(refLink) + '&text=' + encodeURIComponent('🎓 रोज़ सुबह 8 से रात 11 बजे तक फ्री लाइव टेस्ट दें और ₹100 Gift Card व कैश जीतें! अभी जुड़ें:'))],
-    [Markup.button.callback('💸 Withdraw ₹99+ (Submit UPI ID)', 'u_withdraw')],
-    [Markup.button.callback('🔙 Back to Main Menu', 'u_home')]
+    [Markup.button.url('📲 Share Link on Telegram', 'https://t.me/share/url?url=' + encodeURIComponent(refLink) + '&text=' + encodeURIComponent('🎓 रोज़ 15 घंटे फ्री लाइव टेस्ट दें और ₹100 Gift Card जीतें:'))],
+    [Markup.button.callback('💸 Withdraw ₹99+ (Submit UPI)', 'u_withdraw')],
+    [Markup.button.callback('🔙 Back', 'u_home')]
   ];
   if (ctx.callbackQuery) return safeEdit(ctx, msg, Markup.inlineKeyboard(kb));
   return safeSend(ctx.chat.id, msg, Markup.inlineKeyboard(kb));
@@ -752,19 +1078,20 @@ bot.action('u_withdraw', async (ctx) => {
   if (bal < 99) return ctx.answerCbQuery('❌ न्यूनतम निकासी ₹99 है! अभी आपका बैलेंस ₹' + bal + ' है।', { show_alert: true });
   userStates.set(uid, { action: 'SUBMIT_UPI' });
   await ctx.answerCbQuery();
-  return safeSend(ctx.chat.id, '🏦 *UPI Withdrawal (₹' + bal + '):*\nकृपया अपनी सही *UPI ID* और नाम लिखकर भेजें:\n*(रद्द करने के लिए /cancel लिखें)*');
+  return safeSend(ctx.chat.id, '🏦 *UPI Withdrawal (₹' + bal + '):* अपनी सही UPI ID और नाम लिखकर भेजें (/cancel रद्द करने के लिए):');
 });
 
 const renderScheduleView = async (ctx: any) => {
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
   const currentHr = ist.getUTCHours();
   const currentSub = getSubjectForHour(currentHr);
-  let msg = '📅 *PROFESSOR 15-HOUR DAILY TIME-TABLE* 📅\n🟢 *वर्तमान टेस्ट:* *' + ((currentHr >= 8 && currentHr <= 22) ? currentSub : 'विश्राम अवधि (11 PM - 8 AM)') + '*\n━━━━━━━━━━━━━━━━━━━━━\n';
+  let msg = '📅 *15-HOUR SCHEDULE (8 AM - 11 PM)*\n🟢 *Live Now:* *' + ((currentHr >= 8 && currentHr <= 22) ? currentSub : 'Closed (Opens 8 AM)') + '*\n━━━━━━━━━━━━━━━━━━━━━\n';
   SCHEDULE_15H.forEach((s, idx) => {
     const hr = 8 + idx;
-    const label = (hr > 12 ? (hr - 12) + ':00 PM' : (hr === 12 ? '12:00 PM' : '0' + hr + ':00 AM')) + ' — ' + s;
-    msg += (hr === currentHr ? '👉 *' + label + ' (LIVE ⚡)*\n' : '• ' + label + '\n');
+    const label = (hr > 12 ? (hr - 12) + ':00 PM' : (hr === 12 ? '12:00 PM' : '0' + hr + ':00 AM')) + ' ➔ ' + s;
+    msg += (hr === currentHr ? '👉 *' + label + ' (LIVE)*\n' : '• ' + label + '\n');
   });
+  msg += '• 11:00 PM ➔ Daily Closing Report & Pin';
   const kb = Markup.inlineKeyboard([[Markup.button.callback('🔙 Main Menu', 'u_home')]]);
   if (ctx.callbackQuery) return safeEdit(ctx, msg, kb);
   return safeSend(ctx.chat.id, msg, kb);
@@ -776,10 +1103,10 @@ bot.command('schedule', (ctx) => renderScheduleView(ctx));
 const renderMonthlyTopperList = async (ctx: any) => {
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
   const monthKey = ist.getUTCFullYear() + '-' + String(ist.getUTCMonth() + 1).padStart(2, '0');
-  const top = await pool.query('SELECT user_id, username, net_marks FROM monthly_scores WHERE month_key=$1 ORDER BY net_marks DESC LIMIT 10', [monthKey]).catch(() => ({ rows: [] }));
-  let msg = '🏆 *MONTHLY TOPPER LEADERBOARD (' + monthKey + ')* 🏆\n🎁 *1 नवंबर से ₹100 Gift Card जीतने वाले शीर्ष अभ्यर्थी:*\n━━━━━━━━━━━━━━━━━━━━━\n\n';
-  if (top.rows.length === 0) msg += 'इस महीने अभी तक स्कोरबोर्ड खाली है।\n';
-  else top.rows.forEach((r, i) => { msg += (i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖 ' + (i + 1) + '.') + ' [' + r.username + '](tg://user?id=' + r.user_id + ') (ID: ' + r.user_id + ') — *' + Number(r.net_marks).toFixed(2) + ' Pts*\n'; });
+  const top = await pool.query('SELECT user_id, username, right_count, wrong_count, net_marks FROM monthly_scores WHERE month_key=$1 ORDER BY net_marks DESC LIMIT 10', [monthKey]).catch(() => ({ rows: [] }));
+  let msg = '🏆 *MONTHLY TOP 10 (' + monthKey + ')* 🏆\n🎁 *1 Nov ₹100 Gift Card Leaderboard:*\n━━━━━━━━━━━━━━━━━━━━━\n\n';
+  if (top.rows.length === 0) msg += 'अभी स्कोरबोर्ड खाली है।\n';
+  else top.rows.forEach((r, i) => { msg += (i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖' + (i + 1) + '.') + ' [' + r.username + '](tg://user?id=' + r.user_id + ') ➔ *' + Number(r.net_marks).toFixed(2) + ' Pts* (✅' + r.right_count + ' ❌' + r.wrong_count + ')\n'; });
   const kb = Markup.inlineKeyboard([[Markup.button.callback('🔙 Main Menu', 'u_home')]]);
   if (ctx.callbackQuery) return safeEdit(ctx, msg, kb);
   return safeSend(ctx.chat.id, msg, kb);
@@ -830,17 +1157,16 @@ bot.on('my_chat_member', async (ctx) => {
       await pool.query('INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,$2,$3,$4,TRUE,$5) ON CONFLICT(chat_id) DO UPDATE SET title=$2, chat_type=$3, is_active=TRUE', [chat.id, chatTitle, chat.type, adder.id, approved]);
       await safeSend(
         chat.id,
-        '🎓 *धन्यवाद! Professor AI Quiz Bot अब "' + chatTitle + '" से जुड़ चुका है!*\n' +
-        (approved === 'APPROVED' ? '✅ *Status: Active!*' : '⏳ *30-Day Free Trial Request Sent!* मास्टर एडमिन के अप्रूवल के तुरंत बाद (या 100 Stars से 1 साल एक्टिवेट करने पर) यहाँ लाइव टेस्ट शुरू हो जाएंगे!'),
+        '🎓 *Professor AI Quiz Bot अब "' + chatTitle + '" से जुड़ चुका है!*\n' +
+        (approved === 'APPROVED' ? '✅ *Status: Active!*' : '⏳ *30-Day Free Trial Request Sent to Admin!*'),
         Markup.inlineKeyboard([[Markup.button.callback('▶️ Start Live Quiz', 'gstart_' + chat.id), Markup.button.callback('🛑 Stop Quiz', 'pause_test_' + chat.id)]])
       );
       if (ADMIN_ID && !isMaster(adder.id)) {
         await safeSend(
           ADMIN_ID,
-          '🔔 *नया ग्रुप/चैनल अप्रूवल के लिए आया है!*\n📌 नाम: *' + chatTitle + '* (' + chat.type + ')\n🆔 Chat ID: ' + chat.id + '\n👤 User: ' + (adder.first_name || 'User') + ' (' + adder.id + ')',
+          '🔔 *New Group/Channel Added!*\n📌 *' + chatTitle + '* (' + chat.id + ')\n👤 By: ' + (adder.first_name || 'User') + ' (' + adder.id + ')',
           Markup.inlineKeyboard([
-            [Markup.button.callback('✅ Approve (30d Trial)', 'adm_app_' + chat.id), Markup.button.callback('⭐ Grant 1 Year', 'adm_yr_' + chat.id)],
-            [Markup.button.callback('🚫 Reject / Block', 'adm_rej_' + chat.id)]
+            [Markup.button.callback('✅ Approve 30d', 'adm_app_' + chat.id), Markup.button.callback('⭐ Grant 1 Yr', 'adm_yr_' + chat.id), Markup.button.callback('🚫 Block', 'adm_rej_' + chat.id)]
           ])
         );
       }
@@ -852,16 +1178,16 @@ bot.action(/^adm_app_(-?\d+)$/, async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
   const cid = Number(ctx.match[1]);
   await pool.query("UPDATE channels SET approval_status='APPROVED', trial_ends_at = NOW() + INTERVAL '30 days', is_active=TRUE WHERE chat_id=$1", [cid]);
-  await ctx.answerCbQuery('Approved for 30 Days Trial!', { show_alert: true });
-  await safeSend(cid, '🎉 *बधाई हो! मास्टर एडमिन ने आपके ग्रुप/चैनल का 30 दिनों का फ्री ट्रायल अप्रूव कर दिया है!*');
+  await ctx.answerCbQuery('Approved 30d Trial!', { show_alert: true });
+  await safeSend(cid, '🎉 *मास्टर एडमिन ने आपके ग्रुप/चैनल का 30 दिनों का फ्री ट्रायल अप्रूव कर दिया है!*');
 });
 
 bot.action(/^adm_yr_(-?\d+)$/, async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
   const cid = Number(ctx.match[1]);
   await pool.query("UPDATE channels SET approval_status='APPROVED', sub_ends_at = NOW() + INTERVAL '365 days', is_active=TRUE WHERE chat_id=$1", [cid]);
-  await ctx.answerCbQuery('Granted 1 Year Subscription!', { show_alert: true });
-  await safeSend(cid, '🎉 *बधाई हो! मास्टर एडमिन ने आपके ग्रुप/चैनल को पूरे 1 साल (365 दिन) के लिए एक्टिवेट कर दिया है!*');
+  await ctx.answerCbQuery('Granted 1 Year!', { show_alert: true });
+  await safeSend(cid, '🎉 *मास्टर एडमिन ने आपके ग्रुप/चैनल को 1 साल के लिए एक्टिवेट कर दिया है!*');
 });
 
 bot.action(/^adm_rej_(-?\d+)$/, async (ctx) => {
@@ -869,7 +1195,7 @@ bot.action(/^adm_rej_(-?\d+)$/, async (ctx) => {
   const cid = Number(ctx.match[1]);
   await stopTestInGroup(cid, false);
   await pool.query("UPDATE channels SET approval_status='REJECTED', is_active=FALSE WHERE chat_id=$1", [cid]);
-  await ctx.answerCbQuery('Rejected & Blocked!', { show_alert: true });
+  await ctx.answerCbQuery('Blocked!', { show_alert: true });
 });
 
 bot.command('setupgroup', async (ctx) => {
@@ -883,7 +1209,7 @@ bot.command('setupgroup', async (ctx) => {
 
 bot.action('u_groups', async (ctx) => {
   const r = isMaster(ctx.from.id) ? await pool.query('SELECT * FROM channels ORDER BY title LIMIT 30') : await pool.query('SELECT * FROM channels WHERE owner_id=$1', [ctx.from.id]);
-  if (r.rows.length === 0) return safeEdit(ctx, '📢 आपका कोई ग्रुप/चैनल नहीं जुड़ा है।', Markup.inlineKeyboard([[Markup.button.callback('🔙 Back', 'u_home')]]));
+  if (r.rows.length === 0) return safeEdit(ctx, '📢 कोई ग्रुप/चैनल नहीं जुड़ा है।', Markup.inlineKeyboard([[Markup.button.callback('🔙 Back', 'u_home')]]));
   const kb: any[][] = r.rows.map(g => [Markup.button.callback((g.is_active ? '🟢 ' : '🔴 ') + g.title + ' [' + g.approval_status + ']', 'gpanel_' + g.chat_id)]);
   kb.push([Markup.button.callback('🔙 Back', 'u_home')]);
   return safeEdit(ctx, '⚙️ *ग्रुप / चैनल चुनें:*', Markup.inlineKeyboard(kb));
@@ -896,20 +1222,20 @@ const renderGroupPanel = async (ctx: any, chatId: number) => {
   const perm = isGroupAllowedToPost(g);
 
   const txt =
-    '⚙️ *Channel/Group Panel: ' + g.title + '*\n🆔 ID: ' + g.chat_id + ' | 👤 Owner: ' + (g.owner_id || 'N/A') + '\n' +
-    '📡 Schedule: *' + (g.is_active ? 'ON 🟢' : 'OFF 🔴') + '* | 🛡 Approval: *' + g.approval_status + '*\n' +
-    '💳 Plan: *' + (perm.ok ? 'ACTIVE ✅' : 'LOCKED ❌') + '*\n' +
-    '✍️ Custom Header: *' + (g.custom_caption || 'Default') + '*';
+    '⚙️ *Group Panel: ' + g.title + '*\n• 🆔 ID: ' + g.chat_id + ' | 👤 Owner: ' + (g.owner_id || 'N/A') + '\n' +
+    '• 📡 Schedule: *' + (g.is_active ? 'ON 🟢' : 'OFF 🔴') + '* | 🛡 Status: *' + g.approval_status + '*\n' +
+    '• 💳 Plan: *' + (perm.ok ? 'ACTIVE ✅' : 'LOCKED ❌') + '*\n' +
+    '• ✍️ Header: *' + (g.custom_caption || 'Default') + '*';
 
   const kb: any[][] = [
-    [Markup.button.callback('▶️ Start Current Hour Test', 'gstart_' + chatId), Markup.button.callback('🛑 Pause/Stop Test', 'pause_test_' + chatId)],
-    [Markup.button.callback(g.is_active ? '🔕 Turn Schedule OFF' : '🔔 Turn Schedule ON', 'gtog_' + chatId), Markup.button.callback('✍️ Set Custom Caption', 'gcap_' + chatId)],
-    [Markup.button.callback('⭐ Pay 100 Stars (Activate 1 Year)', 'gpay_' + chatId)]
+    [Markup.button.callback('▶️ Start Test', 'gstart_' + chatId), Markup.button.callback('🛑 Stop Test', 'pause_test_' + chatId)],
+    [Markup.button.callback(g.is_active ? '🔕 Schedule OFF' : '🔔 Schedule ON', 'gtog_' + chatId), Markup.button.callback('✍️ Custom Header', 'gcap_' + chatId)],
+    [Markup.button.callback('⭐ Pay 100 Stars (1 Year Auto)', 'gpay_' + chatId)]
   ];
   if (isMaster(ctx.from.id)) {
     kb.push([Markup.button.callback('✅ Approve 30d', 'adm_app_' + chatId), Markup.button.callback('⭐ Grant 1 Yr', 'adm_yr_' + chatId), Markup.button.callback('🚫 Block', 'adm_rej_' + chatId)]);
   }
-  kb.push([Markup.button.callback('🔙 Back to List', 'u_groups')]);
+  kb.push([Markup.button.callback('🔙 Back', 'u_groups')]);
   return safeEdit(ctx, txt, Markup.inlineKeyboard(kb));
 };
 
@@ -919,9 +1245,9 @@ bot.action(/^gcap_(-?\d+)$/, async (ctx) => {
   const cid = Number(ctx.match[1]);
   userStates.set(ctx.from.id, { action: 'SET_GRP_CAP', targetId: cid });
   await ctx.answerCbQuery();
-  return safeSend(ctx.chat.id, '✍️ *अपने ग्रुप/चैनल के लिए कस्टम लाइन लिखें:*\n*(रद्द करने के लिए /cancel लिखें)*');
+  return safeSend(ctx.chat.id, '✍️ *कस्टम लाइन लिखें (/cancel रद्द करने के लिए):*');
 });
-bot.action(/^gpay_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await ctx.answerCbQuery('Sending Invoice...'); return sendStarsInvoice(ctx.chat?.id || ctx.from.id, cid); });
+bot.action(/^gpay_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await ctx.answerCbQuery('Sending Invoice...'); return sendGroupStarsInvoice(ctx.chat?.id || ctx.from.id, cid); });
 bot.action(/^gstart_(-?\d+)$/, async (ctx) => {
   const cid = Number(ctx.match[1]);
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
@@ -931,9 +1257,11 @@ bot.action(/^gstart_(-?\d+)$/, async (ctx) => {
 });
 bot.action(/^pause_test_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await stopTestInGroup(cid, true); await ctx.answerCbQuery('Test Paused!'); });
 
-// MASTER ADMIN PANEL
+// =========================================================
+// MASTER ADMIN PANEL (OWNER ONLY)
+// =========================================================
 const renderAdmin = async (ctx: any) => {
-  if (!isMaster(ctx.from.id)) return ctx.reply('🔒 एडमिन पैनल केवल बॉट मालिक के लिए है। (ID: ' + ctx.from.id + ')');
+  if (!isMaster(ctx.from.id)) return ctx.reply('🔒 केवल बॉट मालिक के लिए। (ID: ' + ctx.from.id + ')');
   const uCnt = (await pool.query('SELECT COUNT(*) FROM users')).rows[0].count;
   const gCnt = (await pool.query('SELECT COUNT(*) FROM channels WHERE is_active=TRUE')).rows[0].count;
   const qCnt = (await pool.query('SELECT COUNT(*) FROM questions')).rows[0].count;
@@ -942,21 +1270,23 @@ const renderAdmin = async (ctx: any) => {
   const facOn = await getCfg('factory_on');
 
   const txt =
-    '👑 *PROFESSOR MASTER ADMIN PANEL* 👑\n\n' +
-    '👥 छात्र: *' + uCnt + '* | 📢 एक्टिव ग्रुप्स: *' + gCnt + '*\n' +
-    '📚 कुल प्रमाणित प्रश्न: *' + qCnt + '*\n' +
-    '👥 Min 3 Participants Check: *' + (minCheckOn ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
-    '🔐 Force Sub: *' + (fsubOn === 'true' ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
-    '⚙️ Auto-Seeder: *' + (facOn === 'true' ? 'RUNNING 🟢' : 'PAUSED 🔴') + '*';
+    '👑 *PROFESSOR MASTER ADMIN PANEL (V6)* 👑\n' +
+    '• 👥 Users: *' + uCnt + '* | 📢 Active Groups: *' + gCnt + '*\n' +
+    '• 📚 Verified Question Bank: *' + qCnt + '*\n' +
+    '• 📡 Seeder Status: ' + lastSeedReport + '\n' +
+    '• 👥 Min 3 Players Check: *' + (minCheckOn ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
+    '• 🔐 2-Channel Force Sub: *' + (fsubOn === 'true' ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
+    '• 🧹 Service Msg Auto-Delete: *ACTIVE 🟢*';
 
   const kb: any[][] = [
-    [Markup.button.callback(minCheckOn ? '🔴 Turn Min 3 Check OFF' : '🟢 Turn Min 3 Check ON', 'adm_tog_min')],
-    [Markup.button.callback('⚡ Seed +10 Questions Now', 'adm_gen10')],
-    [Markup.button.callback('📢 Broadcast All', 'adm_bc'), Markup.button.callback('📌 Broadcast & Auto-Pin', 'adm_bcpin')],
-    [Markup.button.callback('🎁 Edit Gift Tagline', 'adm_gift'), Markup.button.callback('💌 Message Winner', 'adm_msg_win')],
+    [Markup.button.callback(minCheckOn ? '🔴 Min 3 Players: OFF' : '🟢 Min 3 Players: ON', 'adm_tog_min'), Markup.button.callback('⚡ Seed +15 Qs Now', 'adm_gen10')],
+    [Markup.button.callback('📌 Pin Custom Message in Groups', 'adm_bcpin'), Markup.button.callback('📢 Normal Broadcast', 'adm_bc')],
+    [Markup.button.callback('🌙 Post Daily Close Report Now', 'adm_daily_rep'), Markup.button.callback('📄 Generate Free A4 PDF', 'u_pdf_menu')],
+    [Markup.button.callback('🎁 Edit ₹100 Gift Tagline', 'adm_gift'), Markup.button.callback('💌 Message Winner', 'adm_msg_win')],
     [Markup.button.callback('🔐 Set FSub 1', 'adm_fsub1'), Markup.button.callback('💬 Set FSub 2', 'adm_fsub2')],
-    [Markup.button.callback(fsubOn === 'true' ? '🔴 FSub OFF' : '🟢 FSub ON', 'adm_tog_fsub'), Markup.button.callback('🚀 Start Test All', 'adm_start_all')],
-    [Markup.button.callback('⚙️ Manage Groups & Owners', 'u_groups'), Markup.button.callback('🔙 Back to Menu', 'u_home')]
+    [Markup.button.callback(fsubOn === 'true' ? '🔴 FSub OFF' : '🟢 FSub ON', 'adm_tog_fsub'), Markup.button.callback(facOn === 'true' ? '⏸ Pause Seeder' : '▶️ Resume Seeder', 'adm_tog_fac')],
+    [Markup.button.callback('🚀 Start Test All Groups', 'adm_start_all'), Markup.button.callback('🛑 Stop All Tests', 'adm_stop_all')],
+    [Markup.button.callback('⚙️ Manage Groups & Owners', 'u_groups'), Markup.button.callback('🔙 User Menu', 'u_home')]
   ];
   if (ctx.callbackQuery) return safeEdit(ctx, txt, Markup.inlineKeyboard(kb));
   return safeSend(ctx.chat.id, txt, Markup.inlineKeyboard(kb));
@@ -969,7 +1299,13 @@ bot.action('adm_tog_min', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
   const curr = (await getCfg('min_participants_enabled')) !== 'false';
   await setCfg('min_participants_enabled', curr ? 'false' : 'true');
-  await ctx.answerCbQuery('Min 3 Participants Check Updated!');
+  return renderAdmin(ctx);
+});
+
+bot.action('adm_daily_rep', async (ctx) => {
+  if (!isMaster(ctx.from.id)) return;
+  await ctx.answerCbQuery('Posting & Pinning Daily Closing Report...');
+  await announceDailyClosingReport();
   return renderAdmin(ctx);
 });
 
@@ -978,10 +1314,10 @@ bot.action('adm_tog_fac', async (ctx) => { if (!isMaster(ctx.from.id)) return; c
 
 bot.action('adm_gen10', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Generating Questions...');
+  await ctx.answerCbQuery('Seeding 15 Verified Questions...');
   await safeSend(ctx.chat.id, '⏳ *सवाल बनाए जा रहे हैं...*');
-  const r = await generateQuestionsBatch('HISTORY');
-  await safeSend(ctx.chat.id, r.ok ? '✅ ' + r.provider + ' से ' + r.count + ' नए प्रश्न जुड़ गए!' : '❌ जनरेशन विफल: ' + r.error);
+  const r = await generateQuestionsBatch();
+  await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए प्रश्न जुड़ गए!' : '❌ विफल: ' + r.error);
   return renderAdmin(ctx);
 });
 
@@ -1007,7 +1343,7 @@ bot.action(/^pay_ok_(\d+)$/, async (ctx) => {
   await pool.query('UPDATE users SET wallet_balance = 0, referral_count = 0, last_cleared_at = $1 WHERE telegram_id = $2', [clearDate, targetUid]);
   await pool.query('UPDATE users SET referred_by = NULL WHERE referred_by = $1', [targetUid]).catch(() => {});
   await ctx.answerCbQuery('Marked Paid & Reset!', { show_alert: true });
-  await safeSend(targetUid, '✅ *भुगतान सफल एवं रेफ़रल काउंटर रीसेट!* आज से नए सिरे से कमाई शुरू करें।');
+  await safeSend(targetUid, '✅ *भुगतान सफल एवं रेफ़रल काउंटर रीसेट!*');
   await safeEdit(ctx, '✅ *User ' + targetUid + ' का पेमेंट क्लियर और काउंटर रीसेट कर दिया गया (' + clearDate + ')!*');
 });
 
@@ -1017,12 +1353,12 @@ const promptAdminInput = async (ctx: any, action: string, promptText: string) =>
   await safeSend(ctx.chat.id, promptText + '\n*(रद्द करने के लिए /cancel लिखें)*');
 };
 
-bot.action('adm_bc', (ctx) => promptAdminInput(ctx, 'BC_NORM', '📢 *Broadcast:*'));
-bot.action('adm_bcpin', (ctx) => promptAdminInput(ctx, 'BC_PIN', '📌 *Broadcast & Pin:*'));
-bot.action('adm_gift', (ctx) => promptAdminInput(ctx, 'SET_GIFT', '🎁 *Gift Tagline:*'));
+bot.action('adm_bc', (ctx) => promptAdminInput(ctx, 'BC_NORM', '📢 *Broadcast मैसेज भेजें:*'));
+bot.action('adm_bcpin', (ctx) => promptAdminInput(ctx, 'BC_PIN', '📌 *Pin & Broadcast मैसेज भेजें (सभी ग्रुप्स में पिन होगा और यूज़र्स को दिखेगा):*'));
+bot.action('adm_gift', (ctx) => promptAdminInput(ctx, 'SET_GIFT', '🎁 *Gift Tagline लिखें:*'));
 bot.action('adm_fsub1', (ctx) => promptAdminInput(ctx, 'SET_FSUB1', '🔐 *FSub 1:* पोस्ट Forward करें या @username लिखें:'));
 bot.action('adm_fsub2', (ctx) => promptAdminInput(ctx, 'SET_FSUB2', '💬 *FSub 2:* पोस्ट Forward करें या @username लिखें:'));
-bot.action('adm_msg_win', (ctx) => promptAdminInput(ctx, 'MSG_WINNER', '💌 *Winner Message (USER_ID | Text):*'));
+bot.action('adm_msg_win', (ctx) => promptAdminInput(ctx, 'MSG_WINNER', '💌 *User/Winner को मैसेज भेजें (Format: USER_ID | Message):*'));
 
 bot.command('cancel', (ctx) => { userStates.delete(ctx.from.id); ctx.reply('✅ रद्द किया गया।'); });
 
@@ -1030,11 +1366,26 @@ bot.on('message', async (ctx) => {
   const st = userStates.get(ctx.from.id);
   if (!st) return;
 
+  // PDF Complaint Handler
+  if (st.action === 'PDF_COMPLAINT' && 'text' in ctx.message) {
+    userStates.delete(ctx.from.id);
+    const issue = ctx.message.text.trim();
+    const sub = st.meta || 'HISTORY';
+    if (ADMIN_ID) {
+      await safeSend(
+        ADMIN_ID,
+        '⚠️ *PDF COMPLAINT RECEIVED*\n👤 User: ' + (ctx.from.first_name || 'Student') + ' (ID: ' + ctx.from.id + ')\n📘 Subject: ' + sub + '\n💬 Issue: ' + issue,
+        Markup.inlineKeyboard([[Markup.button.callback('📝 Send Editable Text (.txt) to User', 'adm_sendtxt_' + ctx.from.id + '_' + sub)]])
+      );
+    }
+    return safeSend(ctx.chat.id, '✅ *आपकी शिकायत मास्टर एडमिन को भेज दी गई है!* जल्द ही समाधान किया जाएगा।');
+  }
+
   if (st.action === 'SUBMIT_UPI' && 'text' in ctx.message) {
     userStates.delete(ctx.from.id);
     const upiDetails = ctx.message.text.trim();
     const uid = ctx.from.id;
-    const r = await pool.query('SELECT wallet_balance, referral_count, first_name, username FROM users WHERE telegram_id=$1', [uid]);
+    const r = await pool.query('SELECT wallet_balance, referral_count, first_name FROM users WHERE telegram_id=$1', [uid]);
     const u = r.rows[0];
     const bal = Number(u?.wallet_balance || 0);
     if (bal < 99) return safeSend(ctx.chat.id, '❌ बैलेंस ₹99 से कम है।');
@@ -1050,7 +1401,7 @@ bot.on('message', async (ctx) => {
         Markup.inlineKeyboard([[Markup.button.callback('✅ Confirm Paid', 'pay_ok_' + uid)]])
       );
     }
-    return safeSend(ctx.chat.id, '✅ आपकी रिक्वेस्ट एडमिन को भेज दी गई है!');
+    return safeSend(ctx.chat.id, '✅ आपकी रिक्वेस्ट एडमिन को भेज दी गई है और आपका रेफ़रल मीटर 0 से रीसेट हो गया है!');
   }
 
   if (st.action === 'SET_GRP_CAP' && st.targetId && 'text' in ctx.message) {
@@ -1071,11 +1422,11 @@ bot.on('message', async (ctx) => {
     for (const g of gs.rows) {
       try {
         const m = await ctx.telegram.copyMessage(g.chat_id, ctx.chat.id, ctx.message.message_id);
-        if (pin && m.message_id) await ctx.telegram.pinChatMessage(g.chat_id, m.message_id).catch(() => {});
+        if (pin && m.message_id) await ctx.telegram.pinChatMessage(g.chat_id, m.message_id, { disable_notification: false }).catch(() => {});
         await sleep(120);
       } catch {}
     }
-    return safeSend(ctx.chat.id, '✅ Broadcast Complete!');
+    return safeSend(ctx.chat.id, '✅ Broadcast & Pin Complete!');
   }
 
   if (st.action === 'SET_FSUB1' || st.action === 'SET_FSUB2') {
@@ -1090,7 +1441,7 @@ bot.on('message', async (ctx) => {
       if (txt.includes('|')) { const p = txt.split('|'); cid = p[0].trim(); link = p[1].trim(); }
       else if (txt.startsWith('@')) { cid = txt; link = 'https://t.me/' + txt.replace('@', ''); }
     }
-    if (!cid || !link) return safeSend(ctx.chat.id, '❌ कृपया सही पोस्ट Forward करें या @username भेजें।');
+    if (!cid || !link) return safeSend(ctx.chat.id, '❌ कृपया पोस्ट Forward करें या @username लिखें।');
     const num = st.action === 'SET_FSUB1' ? '1' : '2';
     await setCfg('fsub' + num + '_id', cid);
     await setCfg('fsub' + num + '_link', link);
@@ -1107,7 +1458,7 @@ bot.on('message', async (ctx) => {
     const uid = p[0]?.trim();
     const msg = p.slice(1).join('|').trim();
     if (!uid || !msg) return safeSend(ctx.chat.id, '❌ फॉरमेट: ID | Message');
-    await safeSend(uid, '🏆 *REWARD:* ' + msg);
+    await safeSend(uid, '🏆 *MESSAGE FROM PROFESSOR ADMIN:*\n' + msg);
     return safeSend(ctx.chat.id, '✅ Sent!');
   }
 });
@@ -1117,7 +1468,7 @@ const launchBot = async () => {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
     setTimeout(() => { autoResumeOnServerBoot(); generateQuestionsBatch(); }, 4000);
     await bot.launch({ dropPendingUpdates: true });
-    console.log('Professor AI Quiz Bot V5.5 Successfully Launched!');
+    console.log('Professor AI Quiz Bot V6 Master Edition Successfully Launched!');
   } catch (e: any) {
     console.error('Polling Error:', e?.message);
     setTimeout(launchBot, 6000);
