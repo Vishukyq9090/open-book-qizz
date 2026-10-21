@@ -8,7 +8,7 @@ dotenv.config();
 
 http.createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Professor AI Quiz Bot V6 (Complete Syllabus + A4 PDF + Service Cleaner) Running 24/7!');
+  res.end('Professor AI Quiz Bot V6.1 (Gemini 3.8 + Auto-Model Detector) Running 24/7!');
 }).listen(process.env.PORT || 3000);
 
 process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
@@ -74,8 +74,9 @@ const activeTests = new Map<number, { timer: NodeJS.Timeout; subject: string; cu
 const reminderMsgIds = new Map<number, number[]>();
 const userStates = new Map<number, { action: string; targetId?: number; meta?: string }>();
 let isSeedingNow = false;
-let lastSeedReport = 'Initializing Smart Syllabus Seeder...';
+let lastSeedReport = 'Initializing Gemini 3.8 Smart Seeder...';
 let apiKeyCursor = 0;
+let discoveredGeminiModels: string[] = [];
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
@@ -131,7 +132,7 @@ const initDB = async () => {
     "INSERT INTO bot_settings (key, value) VALUES ('fsub1_id', ''), ('fsub1_link', ''), ('fsub2_id', ''), ('fsub2_link', ''), ('fsub_enabled', 'false'), ('min_participants_enabled', 'true'), ('service_clean_enabled', 'true'), ('gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'), ('promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'), ('seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'), ('factory_on', 'true') ON CONFLICT (key) DO NOTHING"
   ];
   for (const q of queries) await pool.query(q).catch(() => {});
-  console.log('Professor V6 Master Database Ready!');
+  console.log('Professor V6.1 Database Ready!');
 };
 initDB();
 
@@ -255,7 +256,6 @@ const deliverOfflineTestPaper = async (chatId: number, subject: string, asTextOn
   const dateStr = new Date(Date.now() + 5.5 * 3600 * 1000).toLocaleDateString('hi-IN');
   const examTarget = EXAM_TARGET_MAP[subject] || 'All Competitive Exams';
 
-  // 1. Editable Text (.txt) Format (Fallback & Self-Edit)
   let txtPaper = '============================================================\n';
   txtPaper += '        PROFESSOR OFFLINE TEST SERIES (MODEL PAPER)         \n';
   txtPaper += '============================================================\n';
@@ -287,7 +287,6 @@ const deliverOfflineTestPaper = async (chatId: number, subject: string, asTextOn
     );
   }
 
-  // 2. A4 Print-Ready 2-Column Coaching Paper + OMR Sheet + Answer Key (.html with 1-Click PDF Print)
   let qHtml = '';
   let omrHtml = '';
   let ansHtml = '';
@@ -344,7 +343,7 @@ const deliverOfflineTestPaper = async (chatId: number, subject: string, asTextOn
         '📄 *A4 Printable Offline Coaching Test Paper (' + subject + ')*\n' +
         '━━━━━━━━━━━━━━━━━━━━━\n' +
         '✅ *इसमें शामिल हैं:* 2-Column 50 Questions + OMR Bubble Sheet + Answer Key\n' +
-        '🖨️ *कैसे प्रिंट करें:* फाइल खोलकर ऊपर ** हरे बटन (Save as A4 PDF / Print)** पर क्लिक करें।\n\n' +
+        '🖨️ *कैसे प्रिंट करें:* फाइल खोलकर ऊपर **हरे बटन (Save as A4 PDF / Print)** पर क्लिक करें।\n\n' +
         '👇 *यदि आपके फोन में PDF सही न दिखे, तो नीचे दिए गए बटन से Editable Text लें या एडमिन को शिकायत भेजें:*',
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
@@ -398,16 +397,46 @@ bot.action(/^adm_sendtxt_(\d+)_(.+)$/, async (ctx) => {
 });
 
 // =========================================================
-// NOTE 1: COMPLETE TOPIC-WISE FAST AUTO-SEEDER (MULTI-KEY)
+// NOTE 1: GEMINI 3.8 + DYNAMIC AUTO-MODEL DETECTOR SEEDER
 // =========================================================
 let seedCursor = 0;
+
+const getActiveGeminiModels = async (apiKey: string): Promise<string[]> => {
+  const priorityList = [
+    'gemini-3.8-flash',
+    'gemini-3.8-flash-lite',
+    'gemini-flash-latest',
+    'gemini-3.5-flash',
+    'gemini-3.0-flash'
+  ];
+  if (discoveredGeminiModels.length > 0) return discoveredGeminiModels;
+
+  try {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?key=' + apiKey);
+    const d: any = await r.json();
+    if (d && Array.isArray(d.models)) {
+      const valid = d.models
+        .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+        .map((m: any) => String(m.name).replace('models/', ''))
+        .filter((name: string) => name.includes('gemini') && !name.includes('vision') && !name.includes('embedding') && !name.includes('2.5') && !name.includes('2.0') && !name.includes('1.5'));
+
+      const flashFirst = valid.sort((a: string, b: string) => (b.includes('flash') ? 1 : 0) - (a.includes('flash') ? 1 : 0));
+      const merged = Array.from(new Set([...priorityList, ...flashFirst]));
+      if (merged.length > 0) {
+        discoveredGeminiModels = merged.slice(0, 6);
+        console.log('Discovered Active Gemini Models:', discoveredGeminiModels.join(', '));
+        return discoveredGeminiModels;
+      }
+    }
+  } catch {}
+  return priorityList;
+};
 
 const getNextSubjectAndTopic = async (forcedSubject?: string): Promise<{ subject: string; topic: string }> => {
   const coreSubjects = SCHEDULE_15H.slice(0, 13);
   let subject = forcedSubject || '';
 
   if (!subject) {
-    // Always prioritize any subject that has < 100 questions so daily tests never run out
     const countsRes = await pool.query('SELECT subject, COUNT(*) as c FROM questions GROUP BY subject').catch(() => ({ rows: [] }));
     const countMap: Record<string, number> = {};
     countsRes.rows.forEach((r: any) => { countMap[r.subject] = Number(r.c); });
@@ -464,7 +493,7 @@ const saveQuestionsToDB = async (arr: any[], subject: string, topic: string): Pr
     if (!q || !q.question_text || !q.option_a || !q.option_b || !q.option_c || !q.option_d || !q.correct_option) continue;
     const cOpt = q.correct_option.toString().trim().toUpperCase().charAt(0);
     if (!['A', 'B', 'C', 'D'].includes(cOpt)) continue;
-    if (q.option_a === q.option_b || q.option_b === q.option_c) continue; // Strict Verification Filter
+    if (q.option_a === q.option_b || q.option_b === q.option_c) continue;
 
     const res = await pool.query(
       'INSERT INTO questions (subject, topic, question_text, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, is_pyq) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (question_text) DO NOTHING RETURNING id',
@@ -514,7 +543,8 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
     if (rawGeminiKeys.length > 0) {
       const geminiKey = rawGeminiKeys[apiKeyCursor++ % rawGeminiKeys.length];
-      const geminiModels = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+      const geminiModels = await getActiveGeminiModels(geminiKey);
+
       for (const model of geminiModels) {
         try {
           const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + geminiKey, {
@@ -526,7 +556,19 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             })
           });
           const d: any = await r.json();
-          if (d.error) { errors.push(model + ': ' + (d.error.message || d.error.code)); continue; }
+          if (d.error) {
+            const errMsg = String(d.error.message || d.error.code || '');
+            errors.push(model + ': ' + errMsg.substring(0, 70));
+            // If Google suggests a newer model in the error message, auto-extract and try it!
+            const suggested = errMsg.match(/models\/([a-zA-Z0-9.-]+)/g);
+            if (suggested) {
+              for (const s of suggested) {
+                const cleanModel = s.replace('models/', '');
+                if (!geminiModels.includes(cleanModel)) geminiModels.push(cleanModel);
+              }
+            }
+            continue;
+          }
           const txt = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
           if (!txt) continue;
           const arr = parseAIJsonArray(txt);
@@ -572,7 +614,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       }
     }
 
-    const errSummary = errors.slice(0, 3).join(' | ').substring(0, 220);
+    const errSummary = errors.slice(0, 2).join(' | ').substring(0, 220);
     lastSeedReport = '❌ Failed: ' + errSummary;
     isSeedingNow = false;
     return { ok: false, count: 0, sub: subject, topic, provider: 'NONE', error: errSummary };
@@ -582,7 +624,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
   }
 };
 
-// Smart Seeding Every 2 Minutes (15 Qs/batch = 450 Qs/hr without hitting per-minute rate limits)
+// Auto-Seed Every 2 Minutes
 cron.schedule('*/2 * * * *', () => { generateQuestionsBatch(); });
 
 // =========================================================
@@ -605,7 +647,6 @@ const clearOldReminders = async (chatId: number) => {
   reminderMsgIds.delete(chatId);
 };
 
-// NOTE 3: LEFT MENTION <-> RIGHT RESULT SIDE-BY-SIDE + AUTO-PIN
 const announceAndPinLeaderboard = async (chatId: number, subject: string) => {
   try {
     const giftTag = await getCfg('gift_tagline');
@@ -638,7 +679,6 @@ const announceAndPinLeaderboard = async (chatId: number, subject: string) => {
   } catch {}
 };
 
-// NOTE 3: DAILY 11:00 PM CLOSING REPORT OF ALL SUBJECTS
 const announceDailyClosingReport = async () => {
   const dayKey = getTodayKey();
   const giftTag = await getCfg('gift_tagline');
@@ -732,7 +772,6 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
   const seoTags = await getCfg('seo_tags');
   const customCap = ch.custom_caption ? '• 📢 *Note:* ' + ch.custom_caption + '\n' : '';
 
-  // NOTE 2: POINT-WISE CRISP HEADER (NO LONG PARAGRAPHS)
   await safeSend(
     chatId,
     '🏛 *LIVE TEST: ' + subject + '* ' + (currentQ > 0 ? '*(Resume Q.' + (currentQ + 1) + ')*' : '') + '\n' +
@@ -775,7 +814,6 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
         await generateQuestionsBatch(isMixed ? undefined : subject);
         qRes = await pool.query('SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) AND id NOT IN (SELECT question_id FROM asked_history WHERE chat_id = $3) ORDER BY RANDOM() LIMIT 1', [isMixed, '%' + subject + '%', chatId]);
       }
-      // Zero-Kachra Auto-Cycle: If group has exhausted all questions of this subject, clear only this subject's history for this group
       if (qRes.rows.length === 0) {
         await pool.query('DELETE FROM asked_history WHERE chat_id=$1 AND question_id IN (SELECT id FROM questions WHERE subject ILIKE $2)', [chatId, '%' + subject + '%']).catch(() => {});
         qRes = await pool.query('SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) ORDER BY RANDOM() LIMIT 1', [isMixed, '%' + subject + '%']);
@@ -913,7 +951,6 @@ cron.schedule('0 8-22 * * *', async () => {
   }
 }, { timezone: 'Asia/Kolkata' });
 
-// 11:00 PM Daily Closing Report Cron
 cron.schedule('0 23 * * *', () => announceDailyClosingReport(), { timezone: 'Asia/Kolkata' });
 
 cron.schedule('0 14 */2 * *', async () => {
@@ -954,7 +991,7 @@ const renderMainMenu = async (ctx: any) => {
   const giftTag = await getCfg('gift_tagline');
   const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
   const text =
-    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V6)*\n' +
+    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V6.1)*\n' +
     '• ⏰ *Live Time:* 8:00 AM – 11:00 PM (15 Hours Daily)\n' +
     '• 📚 *Syllabus:* Topic-Wise Complete Exam Coverage + PYQs\n' +
     '• ⚖️ *Marking:* +1.00 Right | -0.25 Wrong (1/4 Negative)\n' +
@@ -1270,7 +1307,7 @@ const renderAdmin = async (ctx: any) => {
   const facOn = await getCfg('factory_on');
 
   const txt =
-    '👑 *PROFESSOR MASTER ADMIN PANEL (V6)* 👑\n' +
+    '👑 *PROFESSOR MASTER ADMIN PANEL (V6.1)* 👑\n' +
     '• 👥 Users: *' + uCnt + '* | 📢 Active Groups: *' + gCnt + '*\n' +
     '• 📚 Verified Question Bank: *' + qCnt + '*\n' +
     '• 📡 Seeder Status: ' + lastSeedReport + '\n' +
@@ -1314,8 +1351,8 @@ bot.action('adm_tog_fac', async (ctx) => { if (!isMaster(ctx.from.id)) return; c
 
 bot.action('adm_gen10', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Seeding 15 Verified Questions...');
-  await safeSend(ctx.chat.id, '⏳ *सवाल बनाए जा रहे हैं...*');
+  await ctx.answerCbQuery('Seeding 15 Verified Questions via Gemini 3.8...');
+  await safeSend(ctx.chat.id, '⏳ *Gemini 3.8 Flash से 15 नए प्रमाणित सवाल बनाए जा रहे हैं...*');
   const r = await generateQuestionsBatch();
   await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए प्रश्न जुड़ गए!' : '❌ विफल: ' + r.error);
   return renderAdmin(ctx);
@@ -1366,7 +1403,6 @@ bot.on('message', async (ctx) => {
   const st = userStates.get(ctx.from.id);
   if (!st) return;
 
-  // PDF Complaint Handler
   if (st.action === 'PDF_COMPLAINT' && 'text' in ctx.message) {
     userStates.delete(ctx.from.id);
     const issue = ctx.message.text.trim();
@@ -1468,7 +1504,7 @@ const launchBot = async () => {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
     setTimeout(() => { autoResumeOnServerBoot(); generateQuestionsBatch(); }, 4000);
     await bot.launch({ dropPendingUpdates: true });
-    console.log('Professor AI Quiz Bot V6 Master Edition Successfully Launched!');
+    console.log('Professor AI Quiz Bot V6.1 (Gemini 3.8 + Auto-Detector) Successfully Launched!');
   } catch (e: any) {
     console.error('Polling Error:', e?.message);
     setTimeout(launchBot, 6000);
