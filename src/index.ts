@@ -8,7 +8,7 @@ dotenv.config();
 
 http.createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Professor AI Quiz Bot V6.2 (Multi-Key Gemini 3.8 + ChatGPT Fallback) Running 24/7!');
+  res.end('Professor AI Quiz Bot V6.3 (Gemini + Free Groq + ChatGPT) Running 24/7!');
 }).listen(process.env.PORT || 3000);
 
 process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
@@ -74,7 +74,7 @@ const activeTests = new Map<number, { timer: NodeJS.Timeout; subject: string; cu
 const reminderMsgIds = new Map<number, number[]>();
 const userStates = new Map<number, { action: string; targetId?: number; meta?: string }>();
 let isSeedingNow = false;
-let lastSeedReport = 'Initializing Gemini 3.8 Smart Seeder...';
+let lastSeedReport = 'Initializing Multi-Engine Seeder...';
 let apiKeyCursor = 0;
 let discoveredGeminiModels: string[] = [];
 
@@ -132,7 +132,7 @@ const initDB = async () => {
     "INSERT INTO bot_settings (key, value) VALUES ('fsub1_id', ''), ('fsub1_link', ''), ('fsub2_id', ''), ('fsub2_link', ''), ('fsub_enabled', 'false'), ('min_participants_enabled', 'true'), ('service_clean_enabled', 'true'), ('gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'), ('promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'), ('seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'), ('factory_on', 'true') ON CONFLICT (key) DO NOTHING"
   ];
   for (const q of queries) await pool.query(q).catch(() => {});
-  console.log('Professor V6.2 Database Ready!');
+  console.log('Professor V6.3 Database Ready!');
 };
 initDB();
 
@@ -397,7 +397,7 @@ bot.action(/^adm_sendtxt_(\d+)_(.+)$/, async (ctx) => {
 });
 
 // =========================================================
-// NOTE 1: MULTI-KEY GEMINI 3.8 + CHATGPT FALLBACK SEEDER
+// NOTE 1: MULTI-KEY GEMINI 3.8 + FREE GROQ (gsk_) + CHATGPT
 // =========================================================
 let seedCursor = 0;
 
@@ -531,7 +531,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
   isSeedingNow = true;
   try {
     const rawGeminiKeys = (process.env.GEMINI_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean);
-    const openAiKey = (process.env.CHATGPT_API_KEY || process.env.OPENAI_API_KEY || '').trim();
+    const secondKeys = (process.env.GROQ_API_KEY || process.env.CHATGPT_API_KEY || process.env.OPENAI_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean);
     const { subject, topic } = await getNextSubjectAndTopic(forcedSub);
     const examTarget = EXAM_TARGET_MAP[subject] || 'UPSC, PSC, SSC, Railway';
 
@@ -547,8 +547,9 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
     ].join('\n');
 
     let geminiErr = '';
-    let gptErr = '';
+    let fallbackErr = '';
 
+    // 1. Try All Gemini Keys
     if (rawGeminiKeys.length > 0) {
       const modelsToTry = await getActiveGeminiModels(rawGeminiKeys[0]);
       for (let k = 0; k < rawGeminiKeys.length; k++) {
@@ -567,7 +568,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             });
             const d: any = await r.json();
             if (d.error) {
-              geminiErr = 'Key#' + (keyIndex + 1) + ' (' + model + '): ' + String(d.error.message || d.error.code).substring(0, 65);
+              if (!geminiErr) geminiErr = 'Key#' + (keyIndex + 1) + ' (' + model + '): ' + String(d.error.message || d.error.code).substring(0, 60);
               continue;
             }
             const txt = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
@@ -583,7 +584,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
               return { ok: true, count: saved, sub: subject, topic, provider: 'Gemini Key#' + (keyIndex + 1) + ' (' + model + ')' };
             }
           } catch (err: any) {
-            geminiErr = 'Gemini: ' + (err?.message || 'Error');
+            if (!geminiErr) geminiErr = 'Gemini: ' + (err?.message || 'Error');
           }
         }
       }
@@ -591,16 +592,22 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       geminiErr = 'No GEMINI_API_KEY';
     }
 
-    if (openAiKey) {
-      for (const oModel of ['gpt-4o-mini', 'gpt-3.5-turbo']) {
+    // 2. Smart Fallback: Auto-detects Free Groq Key (starts with gsk_) OR OpenAI Key (starts with sk-)
+    for (const sKey of secondKeys) {
+      const isGroq = sKey.startsWith('gsk_');
+      const apiUrl = isGroq ? 'https://api.groq.com/openai/v1/chat/completions' : 'https://api.openai.com/v1/chat/completions';
+      const models = isGroq ? ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'] : ['gpt-4o-mini', 'gpt-3.5-turbo'];
+      const label = isGroq ? 'Groq Free AI' : 'ChatGPT';
+
+      for (const mName of models) {
         try {
-          const r = await fetch('https://api.openai.com/v1/chat/completions', {
+          const r = await fetch(apiUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + openAiKey },
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + sKey },
             body: JSON.stringify({
-              model: oModel,
+              model: mName,
               messages: [
-                { role: 'system', content: 'You are an exam question generator. Respond with valid JSON containing a "questions" array.' },
+                { role: 'system', content: 'You are an Indian competitive exam question generator. Always respond with valid JSON containing a "questions" array.' },
                 { role: 'user', content: prompt }
               ],
               response_format: { type: 'json_object' },
@@ -609,7 +616,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
           });
           const d: any = await r.json();
           if (d.error) {
-            gptErr = 'ChatGPT: ' + String(d.error.message || d.error.code).substring(0, 75);
+            fallbackErr = label + ': ' + String(d.error.message || d.error.code).substring(0, 70);
             continue;
           }
           const txt = d.choices?.[0]?.message?.content?.trim();
@@ -619,19 +626,17 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
           const saved = await saveQuestionsToDB(arr, subject, topic);
           if (saved > 0) {
-            lastSeedReport = '✅ ChatGPT (' + oModel + ') +' + saved + ' Qs [' + subject + ']';
+            lastSeedReport = '✅ ' + label + ' (' + mName + ') +' + saved + ' Qs [' + subject + ']';
             isSeedingNow = false;
-            return { ok: true, count: saved, sub: subject, topic, provider: 'ChatGPT (' + oModel + ')' };
+            return { ok: true, count: saved, sub: subject, topic, provider: label + ' (' + mName + ')' };
           }
         } catch (err: any) {
-          gptErr = 'ChatGPT: ' + (err?.message || 'Error');
+          fallbackErr = label + ': ' + (err?.message || 'Error');
         }
       }
-    } else {
-      gptErr = 'CHATGPT_API_KEY not saved in Render';
     }
 
-    const errSummary = [geminiErr, gptErr].filter(Boolean).join(' | ');
+    const errSummary = [geminiErr, fallbackErr].filter(Boolean).join(' | ');
     lastSeedReport = '❌ ' + errSummary;
     isSeedingNow = false;
     return { ok: false, count: 0, sub: subject, topic, provider: 'NONE', error: errSummary };
@@ -1008,7 +1013,7 @@ const renderMainMenu = async (ctx: any) => {
   const giftTag = await getCfg('gift_tagline');
   const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
   const text =
-    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V6.2)*\n' +
+    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V6.3)*\n' +
     '• ⏰ *Live Time:* 8:00 AM – 11:00 PM (15 Hours Daily)\n' +
     '• 📚 *Syllabus:* Topic-Wise Complete Exam Coverage + PYQs\n' +
     '• ⚖️ *Marking:* +1.00 Right | -0.25 Wrong (1/4 Negative)\n' +
@@ -1324,7 +1329,7 @@ const renderAdmin = async (ctx: any) => {
   const facOn = await getCfg('factory_on');
 
   const txt =
-    '👑 *PROFESSOR MASTER ADMIN PANEL (V6.2)* 👑\n' +
+    '👑 *PROFESSOR MASTER ADMIN PANEL (V6.3)* 👑\n' +
     '• 👥 Users: *' + uCnt + '* | 📢 Active Groups: *' + gCnt + '*\n' +
     '• 📚 Verified Question Bank: *' + qCnt + '*\n' +
     '• 📡 Seeder Status: ' + lastSeedReport + '\n' +
@@ -1369,7 +1374,7 @@ bot.action('adm_tog_fac', async (ctx) => { if (!isMaster(ctx.from.id)) return; c
 bot.action('adm_gen10', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
   await ctx.answerCbQuery('Seeding 15 Verified Questions...');
-  await safeSend(ctx.chat.id, '⏳ *Gemini 3.8 / ChatGPT से 15 नए प्रमाणित सवाल बनाए जा रहे हैं...*');
+  await safeSend(ctx.chat.id, '⏳ *Gemini / Groq / ChatGPT से 15 नए प्रमाणित सवाल बनाए जा रहे हैं...*');
   const r = await generateQuestionsBatch();
   await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए प्रश्न जुड़ गए!' : '❌ विफल: ' + r.error);
   return renderAdmin(ctx);
@@ -1521,7 +1526,7 @@ const launchBot = async () => {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
     setTimeout(() => { autoResumeOnServerBoot(); generateQuestionsBatch(); }, 4000);
     await bot.launch({ dropPendingUpdates: true });
-    console.log('Professor AI Quiz Bot V6.2 Successfully Launched!');
+    console.log('Professor AI Quiz Bot V6.3 Successfully Launched!');
   } catch (e: any) {
     console.error('Polling Error:', e?.message);
     setTimeout(launchBot, 6000);
