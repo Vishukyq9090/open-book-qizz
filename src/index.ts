@@ -402,13 +402,6 @@ bot.action(/^adm_sendtxt_(\d+)_(.+)$/, async (ctx) => {
 let seedCursor = 0;
 
 const getActiveGeminiModels = async (apiKey: string): Promise<string[]> => {
-  const priorityList = [
-    'gemini-3.8-flash',
-    'gemini-3.8-flash-lite',
-    'gemini-flash-latest',
-    'gemini-3.5-flash',
-    'gemini-3.0-flash'
-  ];
   if (discoveredGeminiModels.length > 0) return discoveredGeminiModels;
 
   try {
@@ -418,18 +411,32 @@ const getActiveGeminiModels = async (apiKey: string): Promise<string[]> => {
       const valid = d.models
         .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
         .map((m: any) => String(m.name).replace('models/', ''))
-        .filter((name: string) => name.includes('gemini') && !name.includes('vision') && !name.includes('embedding') && !name.includes('2.5') && !name.includes('2.0') && !name.includes('1.5'));
+        .filter((name: string) =>
+          name.includes('gemini') &&
+          !name.includes('vision') &&
+          !name.includes('embedding') &&
+          !name.includes('image') &&
+          !name.includes('tts') &&
+          !name.includes('audio') &&
+          !name.includes('2.5') &&
+          !name.includes('2.0') &&
+          !name.includes('1.5')
+        );
 
-      const flashFirst = valid.sort((a: string, b: string) => (b.includes('flash') ? 1 : 0) - (a.includes('flash') ? 1 : 0));
-      const merged = Array.from(new Set([...priorityList, ...flashFirst]));
-      if (merged.length > 0) {
-        discoveredGeminiModels = merged.slice(0, 6);
-        console.log('Discovered Active Gemini Models:', discoveredGeminiModels.join(', '));
+      const sorted = valid.sort((a: string, b: string) => {
+        const aScore = (a === 'gemini-3.8-flash' ? 10 : 0) + (a.includes('flash') ? 5 : 0);
+        const bScore = (b === 'gemini-3.8-flash' ? 10 : 0) + (b.includes('flash') ? 5 : 0);
+        return bScore - aScore;
+      });
+
+      if (sorted.length > 0) {
+        discoveredGeminiModels = sorted.slice(0, 4);
+        console.log('Verified Google Models:', discoveredGeminiModels.join(', '));
         return discoveredGeminiModels;
       }
     }
   } catch {}
-  return priorityList;
+  return ['gemini-3.8-flash', 'gemini-flash-latest'];
 };
 
 const getNextSubjectAndTopic = async (forcedSubject?: string): Promise<{ subject: string; topic: string }> => {
@@ -515,6 +522,125 @@ const saveQuestionsToDB = async (arr: any[], subject: string, topic: string): Pr
     if (res && res.rowCount && res.rowCount > 0) saved++;
   }
   return saved;
+};
+
+const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean; count: number; sub: string; topic: string; provider: string; error?: string }> => {
+  if (isSeedingNow && !forcedSub) return { ok: false, count: 0, sub: 'BUSY', topic: '', provider: 'NONE' };
+  if ((await getCfg('factory_on')) === 'false' && !forcedSub) return { ok: false, count: 0, sub: 'PAUSED', topic: '', provider: 'NONE' };
+
+  isSeedingNow = true;
+  try {
+    const rawGeminiKeys = (process.env.GEMINI_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean);
+    const openAiKey = (process.env.CHATGPT_API_KEY || process.env.OPENAI_API_KEY || '').trim();
+    const { subject, topic } = await getNextSubjectAndTopic(forcedSub);
+    const examTarget = EXAM_TARGET_MAP[subject] || 'UPSC, PSC, SSC, Railway';
+
+    const prompt = [
+      'You are an authoritative Indian Competitive Exam Paper Setter for: ' + examTarget + '.',
+      'Generate 15 unique, 100% fact-checked, NCERT & Official Answer-Key verified MCQs on:',
+      'Subject: ' + subject + ' | Specific Topic: ' + topic,
+      'Language: Hindi (if subject is ENGLISH, write in English).',
+      'Distribution: 3 "Easy", 3 "Medium", 3 "Hard", 3 "Ultra Hard", and 3 "Max Hard" questions.',
+      'At least 5 questions MUST be most-repeated Previous Year Questions (mention exam & year like [UPPSC 2023] or [SSC CGL 2022] at end of question_text) with "is_pyq": true.',
+      'Return a valid JSON Object with a "questions" array of 15 objects, each having keys:',
+      '"question_text" (max 205 chars), "option_a", "option_b", "option_c", "option_d" (max 80 chars each), "correct_option" ("A","B","C", or "D"), "explanation" (max 150 chars), "difficulty" ("Easy","Medium","Hard","Ultra Hard","Max Hard"), "is_pyq" (boolean).'
+    ].join('\n');
+
+    let geminiErr = '';
+    let gptErr = '';
+
+    // 1. Try ALL provided Gemini API keys one by one
+    if (rawGeminiKeys.length > 0) {
+      const modelsToTry = await getActiveGeminiModels(rawGeminiKeys[0]);
+      for (let k = 0; k < rawGeminiKeys.length; k++) {
+        const keyIndex = (apiKeyCursor + k) % rawGeminiKeys.length;
+        const geminiKey = rawGeminiKeys[keyIndex];
+
+        for (const model of modelsToTry) {
+          try {
+            const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + geminiKey, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: { responseMimeType: 'application/json', temperature: 0.6 }
+              })
+            });
+            const d: any = await r.json();
+            if (d.error) {
+              geminiErr = 'Key#' + (keyIndex + 1) + ' (' + model + '): ' + String(d.error.message || d.error.code).substring(0, 65);
+              continue;
+            }
+            const txt = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            if (!txt) continue;
+            const arr = parseAIJsonArray(txt);
+            if (!arr || arr.length === 0) continue;
+
+            const saved = await saveQuestionsToDB(arr, subject, topic);
+            if (saved > 0) {
+              apiKeyCursor = keyIndex + 1;
+              lastSeedReport = '✅ Gemini Key#' + (keyIndex + 1) + ' (' + model + ') +' + saved + ' Qs [' + subject + ']';
+              isSeedingNow = false;
+              return { ok: true, count: saved, sub: subject, topic, provider: 'Gemini Key#' + (keyIndex + 1) + ' (' + model + ')' };
+            }
+          } catch (err: any) {
+            geminiErr = 'Gemini: ' + (err?.message || 'Error');
+          }
+        }
+      }
+    } else {
+      geminiErr = 'No GEMINI_API_KEY';
+    }
+
+    // 2. Fallback to ChatGPT (OpenAI)
+    if (openAiKey) {
+      for (const oModel of ['gpt-4o-mini', 'gpt-3.5-turbo']) {
+        try {
+          const r = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + openAiKey },
+            body: JSON.stringify({
+              model: oModel,
+              messages: [
+                { role: 'system', content: 'You are an exam question generator. Respond with valid JSON containing a "questions" array.' },
+                { role: 'user', content: prompt }
+              ],
+              response_format: { type: 'json_object' },
+              temperature: 0.6
+            })
+          });
+          const d: any = await r.json();
+          if (d.error) {
+            gptErr = 'ChatGPT: ' + String(d.error.message || d.error.code).substring(0, 75);
+            continue;
+          }
+          const txt = d.choices?.[0]?.message?.content?.trim();
+          if (!txt) continue;
+          const arr = parseAIJsonArray(txt);
+          if (!arr || arr.length === 0) continue;
+
+          const saved = await saveQuestionsToDB(arr, subject, topic);
+          if (saved > 0) {
+            lastSeedReport = '✅ ChatGPT (' + oModel + ') +' + saved + ' Qs [' + subject + ']';
+            isSeedingNow = false;
+            return { ok: true, count: saved, sub: subject, topic, provider: 'ChatGPT (' + oModel + ')' };
+          }
+        } catch (err: any) {
+          gptErr = 'ChatGPT: ' + (err?.message || 'Error');
+        }
+      }
+    } else {
+      gptErr = 'CHATGPT_API_KEY not saved in Render';
+    }
+
+    const errSummary = [geminiErr, gptErr].filter(Boolean).join(' | ');
+    lastSeedReport = '❌ ' + errSummary;
+    isSeedingNow = false;
+    return { ok: false, count: 0, sub: subject, topic, provider: 'NONE', error: errSummary };
+  } catch (e: any) {
+    isSeedingNow = false;
+    return { ok: false, count: 0, sub: 'ERROR', topic: '', provider: 'NONE', error: e?.message };
+  }
 };
 
 const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean; count: number; sub: string; topic: string; provider: string; error?: string }> => {
