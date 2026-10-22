@@ -8,7 +8,7 @@ dotenv.config();
 
 http.createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Professor AI Quiz Bot V6.1 (Gemini 3.8 + Auto-Model Detector) Running 24/7!');
+  res.end('Professor AI Quiz Bot V6.2 (Multi-Key Gemini 3.8 + ChatGPT Fallback) Running 24/7!');
 }).listen(process.env.PORT || 3000);
 
 process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
@@ -132,7 +132,7 @@ const initDB = async () => {
     "INSERT INTO bot_settings (key, value) VALUES ('fsub1_id', ''), ('fsub1_link', ''), ('fsub2_id', ''), ('fsub2_link', ''), ('fsub_enabled', 'false'), ('min_participants_enabled', 'true'), ('service_clean_enabled', 'true'), ('gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'), ('promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'), ('seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'), ('factory_on', 'true') ON CONFLICT (key) DO NOTHING"
   ];
   for (const q of queries) await pool.query(q).catch(() => {});
-  console.log('Professor V6.1 Database Ready!');
+  console.log('Professor V6.2 Database Ready!');
 };
 initDB();
 
@@ -397,7 +397,7 @@ bot.action(/^adm_sendtxt_(\d+)_(.+)$/, async (ctx) => {
 });
 
 // =========================================================
-// NOTE 1: GEMINI 3.8 + DYNAMIC AUTO-MODEL DETECTOR SEEDER
+// NOTE 1: MULTI-KEY GEMINI 3.8 + CHATGPT FALLBACK SEEDER
 // =========================================================
 let seedCursor = 0;
 
@@ -549,7 +549,6 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
     let geminiErr = '';
     let gptErr = '';
 
-    // 1. Try ALL provided Gemini API keys one by one
     if (rawGeminiKeys.length > 0) {
       const modelsToTry = await getActiveGeminiModels(rawGeminiKeys[0]);
       for (let k = 0; k < rawGeminiKeys.length; k++) {
@@ -592,7 +591,6 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       geminiErr = 'No GEMINI_API_KEY';
     }
 
-    // 2. Fallback to ChatGPT (OpenAI)
     if (openAiKey) {
       for (const oModel of ['gpt-4o-mini', 'gpt-3.5-turbo']) {
         try {
@@ -635,113 +633,6 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
     const errSummary = [geminiErr, gptErr].filter(Boolean).join(' | ');
     lastSeedReport = '❌ ' + errSummary;
-    isSeedingNow = false;
-    return { ok: false, count: 0, sub: subject, topic, provider: 'NONE', error: errSummary };
-  } catch (e: any) {
-    isSeedingNow = false;
-    return { ok: false, count: 0, sub: 'ERROR', topic: '', provider: 'NONE', error: e?.message };
-  }
-};
-
-const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean; count: number; sub: string; topic: string; provider: string; error?: string }> => {
-  if (isSeedingNow && !forcedSub) return { ok: false, count: 0, sub: 'BUSY', topic: '', provider: 'NONE' };
-  if ((await getCfg('factory_on')) === 'false' && !forcedSub) return { ok: false, count: 0, sub: 'PAUSED', topic: '', provider: 'NONE' };
-
-  isSeedingNow = true;
-  try {
-    const rawGeminiKeys = (process.env.GEMINI_API_KEY || '').split(',').map(k => k.trim()).filter(Boolean);
-    const openAiKey = (process.env.CHATGPT_API_KEY || process.env.OPENAI_API_KEY || '').trim();
-    const { subject, topic } = await getNextSubjectAndTopic(forcedSub);
-    const examTarget = EXAM_TARGET_MAP[subject] || 'UPSC, PSC, SSC, Railway';
-
-    const prompt = [
-      'You are an authoritative Indian Competitive Exam Paper Setter for: ' + examTarget + '.',
-      'Generate 15 unique, 100% fact-checked, NCERT & Official Answer-Key verified MCQs on:',
-      'Subject: ' + subject + ' | Specific Topic: ' + topic,
-      'Language: Hindi (if subject is ENGLISH, write in English).',
-      'Distribution: 3 "Easy", 3 "Medium", 3 "Hard", 3 "Ultra Hard", and 3 "Max Hard" questions.',
-      'At least 5 questions MUST be most-repeated Previous Year Questions (mention exam & year like [UPPSC 2023] or [SSC CGL 2022] at end of question_text) with "is_pyq": true.',
-      'Return a valid JSON Object with a "questions" array of 15 objects, each having keys:',
-      '"question_text" (max 205 chars), "option_a", "option_b", "option_c", "option_d" (max 80 chars each), "correct_option" ("A","B","C", or "D"), "explanation" (max 150 chars), "difficulty" ("Easy","Medium","Hard","Ultra Hard","Max Hard"), "is_pyq" (boolean).'
-    ].join('\n');
-
-    const errors: string[] = [];
-
-    if (rawGeminiKeys.length > 0) {
-      const geminiKey = rawGeminiKeys[apiKeyCursor++ % rawGeminiKeys.length];
-      const geminiModels = await getActiveGeminiModels(geminiKey);
-
-      for (const model of geminiModels) {
-        try {
-          const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + geminiKey, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: { responseMimeType: 'application/json', temperature: 0.6 }
-            })
-          });
-          const d: any = await r.json();
-          if (d.error) {
-            const errMsg = String(d.error.message || d.error.code || '');
-            errors.push(model + ': ' + errMsg.substring(0, 70));
-            // If Google suggests a newer model in the error message, auto-extract and try it!
-            const suggested = errMsg.match(/models\/([a-zA-Z0-9.-]+)/g);
-            if (suggested) {
-              for (const s of suggested) {
-                const cleanModel = s.replace('models/', '');
-                if (!geminiModels.includes(cleanModel)) geminiModels.push(cleanModel);
-              }
-            }
-            continue;
-          }
-          const txt = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-          if (!txt) continue;
-          const arr = parseAIJsonArray(txt);
-          if (!arr || arr.length === 0) continue;
-
-          const saved = await saveQuestionsToDB(arr, subject, topic);
-          if (saved > 0) {
-            lastSeedReport = '✅ Gemini (' + model + ') +' + saved + ' Qs [' + subject + ']';
-            isSeedingNow = false;
-            return { ok: true, count: saved, sub: subject, topic, provider: 'Gemini (' + model + ')' };
-          }
-        } catch (err: any) { errors.push(model + ': ' + (err?.message || 'Error')); }
-      }
-    }
-
-    if (openAiKey) {
-      for (const oModel of ['gpt-4o-mini', 'gpt-3.5-turbo']) {
-        try {
-          const r = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + openAiKey },
-            body: JSON.stringify({
-              model: oModel,
-              messages: [{ role: 'system', content: 'You are an exam question generator. Respond with valid JSON containing a "questions" array.' }, { role: 'user', content: prompt }],
-              response_format: { type: 'json_object' },
-              temperature: 0.6
-            })
-          });
-          const d: any = await r.json();
-          if (d.error) { errors.push('ChatGPT (' + oModel + '): ' + (d.error.message || d.error.code)); continue; }
-          const txt = d.choices?.[0]?.message?.content?.trim();
-          if (!txt) continue;
-          const arr = parseAIJsonArray(txt);
-          if (!arr || arr.length === 0) continue;
-
-          const saved = await saveQuestionsToDB(arr, subject, topic);
-          if (saved > 0) {
-            lastSeedReport = '✅ ChatGPT (' + oModel + ') +' + saved + ' Qs [' + subject + ']';
-            isSeedingNow = false;
-            return { ok: true, count: saved, sub: subject, topic, provider: 'ChatGPT (' + oModel + ')' };
-          }
-        } catch (err: any) { errors.push('ChatGPT: ' + (err?.message || 'Error')); }
-      }
-    }
-
-    const errSummary = errors.slice(0, 2).join(' | ').substring(0, 220);
-    lastSeedReport = '❌ Failed: ' + errSummary;
     isSeedingNow = false;
     return { ok: false, count: 0, sub: subject, topic, provider: 'NONE', error: errSummary };
   } catch (e: any) {
@@ -1117,7 +1008,7 @@ const renderMainMenu = async (ctx: any) => {
   const giftTag = await getCfg('gift_tagline');
   const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
   const text =
-    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V6.1)*\n' +
+    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V6.2)*\n' +
     '• ⏰ *Live Time:* 8:00 AM – 11:00 PM (15 Hours Daily)\n' +
     '• 📚 *Syllabus:* Topic-Wise Complete Exam Coverage + PYQs\n' +
     '• ⚖️ *Marking:* +1.00 Right | -0.25 Wrong (1/4 Negative)\n' +
@@ -1433,7 +1324,7 @@ const renderAdmin = async (ctx: any) => {
   const facOn = await getCfg('factory_on');
 
   const txt =
-    '👑 *PROFESSOR MASTER ADMIN PANEL (V6.1)* 👑\n' +
+    '👑 *PROFESSOR MASTER ADMIN PANEL (V6.2)* 👑\n' +
     '• 👥 Users: *' + uCnt + '* | 📢 Active Groups: *' + gCnt + '*\n' +
     '• 📚 Verified Question Bank: *' + qCnt + '*\n' +
     '• 📡 Seeder Status: ' + lastSeedReport + '\n' +
@@ -1477,8 +1368,8 @@ bot.action('adm_tog_fac', async (ctx) => { if (!isMaster(ctx.from.id)) return; c
 
 bot.action('adm_gen10', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Seeding 15 Verified Questions via Gemini 3.8...');
-  await safeSend(ctx.chat.id, '⏳ *Gemini 3.8 Flash से 15 नए प्रमाणित सवाल बनाए जा रहे हैं...*');
+  await ctx.answerCbQuery('Seeding 15 Verified Questions...');
+  await safeSend(ctx.chat.id, '⏳ *Gemini 3.8 / ChatGPT से 15 नए प्रमाणित सवाल बनाए जा रहे हैं...*');
   const r = await generateQuestionsBatch();
   await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए प्रश्न जुड़ गए!' : '❌ विफल: ' + r.error);
   return renderAdmin(ctx);
@@ -1630,7 +1521,7 @@ const launchBot = async () => {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
     setTimeout(() => { autoResumeOnServerBoot(); generateQuestionsBatch(); }, 4000);
     await bot.launch({ dropPendingUpdates: true });
-    console.log('Professor AI Quiz Bot V6.1 (Gemini 3.8 + Auto-Detector) Successfully Launched!');
+    console.log('Professor AI Quiz Bot V6.2 Successfully Launched!');
   } catch (e: any) {
     console.error('Polling Error:', e?.message);
     setTimeout(launchBot, 6000);
