@@ -1,45 +1,45 @@
-name: Professor Quiz Bot 24x7
+name: SportsDuniya Auto News Bot
 
 on:
   schedule:
-    # हर 5 घंटे में ठीक 52वें मिनट पर रीस्टार्ट (जब 50 सवालों का टेस्ट खत्म हो चुका होता है)
-    - cron: '52 */5 * * *'
+    - cron: '15 */5 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+  actions: write
+
 concurrency:
-  group: professor-quiz-bot-live
+  group: sports-duniya-cron-engine
   cancel-in-progress: true
 
 jobs:
-  run-quiz-bot:
+  post-news:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
-      - name: Checkout Code
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '20'
+          python-version: '3.11'
 
-      - name: Install & Build TypeScript
-        run: |
-          npm install
-          npm run build
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
 
-      - name: Run Bot (5.5 Hours Cycle)
+      - name: Start Built-in Python Cron Job (Groq + Gemini)
         env:
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          ADMIN_ID: ${{ secrets.ADMIN_ID }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: timeout 19800s npm start || true
+        run: python -u bot.py
 
-      - name: Auto-Restart Next Session Immediately
+      - name: Auto-Restart Next 5.5h Shift Immediately
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh workflow run quiz_bot.yml --repo ${{ github.repository }} || true
+          gh workflow run sports_bot.yml --repo ${{ github.repository }} || true
