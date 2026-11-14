@@ -26,10 +26,10 @@ jobs:
           node-version: '20'
       - name: Install and Build
         run: npm install && npm run build
-      - name: Run Bot
+     - name: Run Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+          ADMIN_ID: "7412791600"
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
