@@ -1,0 +1,45 @@
+name: Professor Quiz Bot 24x7
+
+on:
+  schedule:
+    # हर 5 घंटे में ठीक 52वें मिनट पर रीस्टार्ट (जब 50 सवालों का टेस्ट खत्म हो चुका होता है)
+    - cron: '52 */5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: professor-quiz-bot-live
+  cancel-in-progress: true
+
+jobs:
+  run-quiz-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install & Build TypeScript
+        run: |
+          npm install
+          npm run build
+
+      - name: Run Bot (5.5 Hours Cycle)
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: timeout 19800s npm start || true
+
+      - name: Auto-Restart Next Session Immediately
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run quiz_bot.yml --repo ${{ github.repository }} || true
