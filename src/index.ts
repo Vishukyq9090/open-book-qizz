@@ -9,7 +9,7 @@ dotenv.config();
 
 http.createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Professor AI Quiz Bot V8.0 Pro (Zero-Duplicate + Auto-Clean + Freemium + Mistake Book) Running 24/7!');
+  res.end('Professor AI Quiz Bot V8.1 Pro (Groq + Gemini 3.8 Flash Fallback + Zero-Duplicate) Running 24/7!');
 }).listen(process.env.PORT || 3000);
 
 process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
@@ -100,7 +100,7 @@ const rateLimitMap = new Map<number, number>();
 
 let isSeedingNow = false;
 let seedingStartedAt = 0;
-let lastSeedReport = 'Initializing Smart Zero-Duplicate Seeder...';
+let lastSeedReport = 'Initializing Groq + Gemini 3.8 Flash Seeder...';
 let apiKeyCursor = 0;
 let discoveredGeminiModels: string[] = [];
 let discoveredGroqModels: string[] = [];
@@ -112,10 +112,10 @@ const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 // =========================================================
 const makeQuestionHash = (rawText: string): string => {
   const cleaned = String(rawText || '')
-    .replace(/\[.*?\]/g, '') // Remove [UPPSC 2023], [Set-101], etc.
+    .replace(/\[.*?\]/g, '')
     .replace(/\(.*?\)/g, '')
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '') // Keep only letters & numbers across Hindi/English
+    .replace(/[^\p{L}\p{N}]+/gu, '')
     .trim();
   return crypto.createHash('md5').update(cleaned || rawText).digest('hex');
 };
@@ -207,7 +207,7 @@ const initDB = async (): Promise<boolean> => {
     ];
     for (const q of queries) await pool.query(q).catch(() => {});
     dbStatusText = '🟢 PostgreSQL Connected & Active';
-    console.log('Professor V8.0 Pro PostgreSQL Database Ready!');
+    console.log('Professor V8.1 Pro PostgreSQL Database Ready!');
     return true;
   } catch (e: any) {
     dbStatusText = '🔴 DB Connection Error: ' + String(e?.message || 'Check DATABASE_URL').substring(0, 45);
@@ -216,13 +216,11 @@ const initDB = async (): Promise<boolean> => {
 };
 initDB();
 
-// Auto-Cleanup Garbage Data Every 2 Hours + Keep DB Awake Every 4 Minutes
 const runDatabaseAutoCleaner = async () => {
   try {
     await pool.query("DELETE FROM poll_tracking WHERE created_at < NOW() - INTERVAL '2 hours'").catch(() => {});
     await pool.query("DELETE FROM asked_history WHERE asked_at < NOW() - INTERVAL '15 days'").catch(() => {});
     await pool.query("DELETE FROM user_mistakes WHERE wrong_at < NOW() - INTERVAL '30 days'").catch(() => {});
-    // Remove any legacy duplicate questions sharing the same normalized text
     await pool.query("UPDATE questions SET q_hash = md5(lower(regexp_replace(question_text, '\\[.*?\\]|[^a-zA-Z0-9\\u0900-\\u097F]+', '', 'g'))) WHERE q_hash IS NULL").catch(() => {});
     console.log('[AUTO-CLEANER] Old polls, expired history & garbage data purged!');
   } catch {}
@@ -294,7 +292,6 @@ bot.use(async (ctx, next) => {
     if (isMaster(ctx.from.id)) return next();
     const uid = ctx.from.id;
 
-    // Anti-Spam Cooldown (1.1s between rapid commands/clicks per user)
     if (ctx.message || ctx.callbackQuery) {
       const lastTs = rateLimitMap.get(uid) || 0;
       if (Date.now() - lastTs < 1100) {
@@ -565,7 +562,7 @@ bot.action(/^adm_sendtxt_(\d+)_(.+)$/, async (ctx) => {
 });
 
 // =========================================================
-// ZERO-DUPLICATE GROQ + GEMINI SEEDER WITH CONTEXT EXCLUSION
+// ZERO-DUPLICATE GROQ + GEMINI 3.8 FLASH FALLBACK SEEDER
 // =========================================================
 let seedCursor = 0;
 
@@ -577,10 +574,12 @@ const getActiveGroqModels = async (gKey: string): Promise<string[]> => {
     }, 12000);
     const d: any = await r.json();
     if (d && Array.isArray(d.data)) {
+      // Strictly exclude low-TPM / small-request models like qwen, deepseek, allam, compound
       const valid = d.data
         .map((m: any) => String(m.id || ''))
         .filter((id: string) =>
           id &&
+          (id.includes('llama') || id.includes('gemma')) &&
           !id.includes('whisper') &&
           !id.includes('guard') &&
           !id.includes('tts') &&
@@ -592,16 +591,15 @@ const getActiveGroqModels = async (gKey: string): Promise<string[]> => {
         );
       valid.sort((a: string, b: string) => {
         const score = (s: string) =>
-          (s.includes('llama-3.3') ? 25 : 0) +
-          (s.includes('llama-4') ? 22 : 0) +
+          (s.includes('llama-3.3-70b') ? 30 : 0) +
+          (s.includes('llama-4') ? 25 : 0) +
+          (s.includes('70b') ? 20 : 0) +
           (s.includes('llama') ? 15 : 0) +
-          (s.includes('qwen') ? 12 : 0) +
-          (s.includes('gemma') ? 10 : 0) +
-          (s.includes('deepseek') ? 8 : 0);
+          (s.includes('gemma') ? 10 : 0);
         return score(b) - score(a);
       });
       if (valid.length > 0) {
-        discoveredGroqModels = valid.slice(0, 5);
+        discoveredGroqModels = valid.slice(0, 3);
         return discoveredGroqModels;
       }
     }
@@ -611,6 +609,7 @@ const getActiveGroqModels = async (gKey: string): Promise<string[]> => {
 
 const getActiveGeminiModels = async (apiKey: string): Promise<string[]> => {
   if (discoveredGeminiModels.length > 0) return discoveredGeminiModels;
+  const priorityModels = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-flash-lite-latest'];
   try {
     const r = await fetchWithTimeout('https://generativelanguage.googleapis.com/v1beta/models?key=' + apiKey, {}, 12000);
     const d: any = await r.json();
@@ -626,14 +625,21 @@ const getActiveGeminiModels = async (apiKey: string): Promise<string[]> => {
           !name.includes('tts') &&
           !name.includes('audio')
         );
-      valid.sort((a: string, b: string) => (b.includes('flash') ? 10 : 0) - (a.includes('flash') ? 10 : 0));
+      valid.sort((a: string, b: string) => {
+        const score = (s: string) =>
+          (s === 'gemini-3.8-flash' ? 50 : 0) +
+          (s.includes('3.8') ? 40 : 0) +
+          (s.includes('flash-latest') ? 30 : 0) +
+          (s.includes('flash') ? 20 : 0);
+        return score(b) - score(a);
+      });
       if (valid.length > 0) {
-        discoveredGeminiModels = valid.slice(0, 5);
+        discoveredGeminiModels = Array.from(new Set(['gemini-3.8-flash', ...valid, ...priorityModels])).slice(0, 5);
         return discoveredGeminiModels;
       }
     }
   } catch {}
-  return ['gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+  return priorityModels;
 };
 
 const getNextSubjectAndTopic = async (forcedSubject?: string): Promise<{ subject: string; topic: string }> => {
@@ -766,32 +772,28 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
     const { subject, topic } = await getNextSubjectAndTopic(forcedSub);
     const examTarget = EXAM_TARGET_MAP[subject] || 'UPSC, PSC, SSC, Railway';
 
-    // Fetch existing recent answers on this topic so AI never repeats the same facts
+    // Compact recent answers list (max 8 items) so request never exceeds Groq token limits
     const recentRes = await pool.query(
-      'SELECT option_a, option_b, option_c, option_d, correct_option FROM questions WHERE subject=$1 AND topic=$2 ORDER BY id DESC LIMIT 18',
+      'SELECT option_a, option_b, option_c, option_d, correct_option FROM questions WHERE subject=$1 AND topic=$2 ORDER BY id DESC LIMIT 8',
       [subject, topic]
     ).catch(() => ({ rows: [] }));
     const usedAnswers = recentRes.rows.map((r: any) => {
       const m: Record<string, string> = { A: r.option_a, B: r.option_b, C: r.option_c, D: r.option_d };
-      return m[r.correct_option] || r.option_a;
+      return String(m[r.correct_option] || r.option_a).substring(0, 28);
     }).filter(Boolean).join(', ');
 
     const prompt = [
-      'You are an authoritative Indian Competitive Exam Paper Setter for: ' + examTarget + '.',
-      'Generate 15 unique, 100% fact-checked, NCERT & Official Answer-Key verified MCQs on:',
-      'Subject: ' + subject + ' | Specific Topic: ' + topic,
-      usedAnswers ? 'IMPORTANT DUPLICATE PREVENTION: Do NOT create questions whose main answer is already in this list: [' + usedAnswers + ']. Pick completely fresh facts, articles, years, or concepts!' : '',
-      'Language: Hindi (if subject is ENGLISH, write in English).',
-      'Distribution: 3 "Easy", 3 "Medium", 3 "Hard", 3 "Ultra Hard", and 3 "Max Hard" questions.',
-      'At least 5 questions MUST be Previous Year Questions (mention exam & year like [UPPSC 2023] or [SSC CGL 2022] at end of question_text) with "is_pyq": true.',
-      'Return ONLY a valid JSON array of 15 objects, each having keys:',
-      '"question_text" (max 205 chars), "option_a", "option_b", "option_c", "option_d" (max 80 chars each), "correct_option" ("A","B","C", or "D"), "explanation" (max 150 chars), "difficulty" ("Easy","Medium","Hard","Ultra Hard","Max Hard"), "is_pyq" (boolean).'
+      'Indian Exam Setter (' + examTarget + '). Generate 15 unique NCERT-verified MCQs on:',
+      'Subject: ' + subject + ' | Topic: ' + topic,
+      usedAnswers ? 'Avoid answers already covered: [' + usedAnswers + '].' : '',
+      'Language: Hindi (if ENGLISH, use English). Mix Easy, Medium, Hard, Ultra Hard, Max Hard. Include 5 PYQs with [Exam Year] tag.',
+      'Return ONLY a JSON array of 15 objects with keys: "question_text", "option_a", "option_b", "option_c", "option_d", "correct_option" ("A"-"D"), "explanation", "difficulty", "is_pyq" (boolean).'
     ].filter(Boolean).join('\n');
 
     let groqErr = '';
     let geminiErr = '';
 
-    // 1. Dynamically Discovered Active Groq Models (gsk_)
+    // 1. Try High-Limit Groq Llama/Gemma Models (gsk_)
     for (const gKey of groqKeys) {
       const groqModels = await getActiveGroqModels(gKey);
       for (const mName of groqModels) {
@@ -802,15 +804,16 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             body: JSON.stringify({
               model: mName,
               messages: [
-                { role: 'system', content: 'You are an Indian exam question setter. Output strictly a valid JSON array of 15 unique question objects.' },
+                { role: 'system', content: 'Output strictly a valid JSON array of 15 question objects.' },
                 { role: 'user', content: prompt }
               ],
+              max_tokens: 2600,
               temperature: 0.75
             })
           }, 22000);
           const d: any = await r.json();
           if (d.error) {
-            groqErr = 'Groq (' + mName + '): ' + String(d.error.message || d.error.code).substring(0, 50);
+            groqErr = 'Groq (' + mName + '): ' + String(d.error.message || d.error.code).substring(0, 45);
             continue;
           }
           const txt = d.choices?.[0]?.message?.content?.trim();
@@ -830,7 +833,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       }
     }
 
-    // 2. Dynamically Discovered Active Gemini Models (AIza)
+    // 2. Fallback to Gemini 3.8 Flash & Active Gemini Models (AIza)
     if (geminiKeys.length > 0) {
       const modelsToTry = await getActiveGeminiModels(geminiKeys[0]);
       for (let k = 0; k < geminiKeys.length; k++) {
@@ -844,12 +847,12 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { temperature: 0.75 }
+                generationConfig: { responseMimeType: 'application/json', temperature: 0.75 }
               })
             }, 22000);
             const d: any = await r.json();
             if (d.error) {
-              if (!geminiErr) geminiErr = 'Gemini (' + model + '): ' + String(d.error.message || d.error.code).substring(0, 50);
+              geminiErr = 'Gemini (' + model + '): ' + String(d.error.message || d.error.code).substring(0, 45);
               continue;
             }
             const txt = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
@@ -892,7 +895,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       } catch {}
     }
 
-    const errSummary = [groqErr, geminiErr].filter(Boolean).join(' | ') || 'All generated questions were duplicates';
+    const errSummary = [geminiErr, groqErr].filter(Boolean).join(' | ') || 'All generated questions were duplicates';
     lastSeedReport = '⚠️ ' + errSummary;
     isSeedingNow = false;
     return { ok: false, count: 0, sub: subject, topic, provider: 'NONE', error: errSummary };
@@ -1236,7 +1239,6 @@ bot.on('poll_answer', async (ctx) => {
     const wInc = isRight ? 0 : 1;
     const markDelta = isRight ? 1.00 : -0.25;
 
-    // Save or remove from Mistake Notebook automatically
     if (Number(question_id) > 0) {
       if (!isRight) {
         await pool.query('INSERT INTO user_mistakes(user_id, question_id, wrong_at) VALUES($1,$2,NOW()) ON CONFLICT (user_id, question_id) DO UPDATE SET wrong_at=NOW()', [uid, question_id]).catch(() => {});
@@ -1469,7 +1471,7 @@ const renderMainMenu = async (ctx: any) => {
   const giftTag = await getCfg('gift_tagline');
   const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
   const text =
-    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V8.0 Pro)*\n' +
+    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V8.1 Pro)*\n' +
     '• ⏰ *Live Time:* 8:00 AM – 11:00 PM (15 Hours Daily)\n' +
     '• 📓 *Smart Features:* Mistake Notebook + Solo Practice + Report Card\n' +
     '• 🎁 *Freemium Offer:* 1st A4 PDF Paper *FREE* | Groups *30-Day FREE Trial*\n' +
@@ -1825,7 +1827,6 @@ bot.action(/^gstart_(-?\d+)$/, async (ctx) => {
   return openThreePlayerLobby(cid, sub);
 });
 
-// PROTECTED STOP BUTTON: Only Master Admin or Group Admins can pause a running test!
 bot.action(/^pause_test_(-?\d+)$/, async (ctx) => {
   const cid = Number(ctx.match[1]);
   const allowed = await isGroupAdminOrMaster(ctx, cid, ctx.from.id);
@@ -1862,7 +1863,7 @@ const renderAdmin = async (ctx: any) => {
   const facOn = await getCfg('factory_on');
 
   const txt =
-    '👑 *PROFESSOR MASTER ADMIN PANEL (V8.0 Pro)* 👑\n' +
+    '👑 *PROFESSOR MASTER ADMIN PANEL (V8.1 Pro)* 👑\n' +
     '• 🗄 *Database:* ' + dbStatusText + '\n' +
     '• 👥 *Users:* *' + uCnt + '* | 📢 *Active Groups:* *' + gCnt + '*\n' +
     '• 📚 *Unique Question Bank:* *' + qCnt + '* (Zero-Duplicate Hash)\n' +
@@ -1926,7 +1927,7 @@ bot.action('adm_tog_fac', async (ctx) => { if (!isMaster(ctx.from.id)) return; c
 
 bot.action('adm_gen10', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Seeding 15 Unique Questions...');
+  await ctx.answerCbQuery('Seeding 15 Unique Questions (Groq / Gemini 3.8 Flash)...');
   isSeedingNow = false;
   const r = await generateQuestionsBatch();
   await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए (Zero-Duplicate) प्रश्न जुड़ गए!' : '⚠️ ' + r.error);
@@ -2121,7 +2122,7 @@ const launchBot = async () => {
       generateQuestionsBatch();
     }, 3000);
     await bot.launch({ dropPendingUpdates: true });
-    console.log('Professor AI Quiz Bot V8.0 Pro Successfully Launched!');
+    console.log('Professor AI Quiz Bot V8.1 Pro Successfully Launched!');
   } catch (e: any) {
     console.error('Polling Error:', e?.message);
     setTimeout(launchBot, 6000);
