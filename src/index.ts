@@ -15,7 +15,7 @@ process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
 process.on('unhandledRejection', (e) => console.error('Unhandled Rejection:', e));
 
 const bot = new Telegraf(process.env.BOT_TOKEN || '');
-const ADMIN_ID = (process.env.ADMIN_ID || '').trim();
+const isMaster = (uid: number) => uid.toString() === '7412791600' || (Boolean(ADMIN_ID) && uid.toString() === ADMIN_ID);
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 
 const SCHEDULE_15H = [
