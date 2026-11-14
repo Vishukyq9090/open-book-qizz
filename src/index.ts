@@ -2,14 +2,13 @@ import { Telegraf, Markup } from 'telegraf';
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
 import http from 'http';
-import fs from 'fs';
 import cron from 'node-cron';
 
 dotenv.config();
 
 http.createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Professor AI Quiz Bot V6.5 (Groq + Gemini + 3-Player Lobby) Running 24/7!');
+  res.end('Professor AI Quiz Bot V6.7 (PostgreSQL Keep-Alive + Dynamic Groq/Gemini Seeder) Running 24/7!');
 }).listen(process.env.PORT || 3000);
 
 process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
@@ -22,84 +21,23 @@ const ADMIN_ID = cleanEnv(process.env.ADMIN_ID) || '7412791600';
 const MASTER_IDS = new Set(['7412791600', ADMIN_ID].filter(Boolean));
 const isMaster = (uid?: number | string) => Boolean(uid) && MASTER_IDS.has(String(uid).trim());
 
-const rawDbUrl = cleanEnv(process.env.DATABASE_URL);
-const pgPool = rawDbUrl
-  ? new Pool({
-      connectionString: rawDbUrl,
-      ssl: { rejectUnauthorized: false },
-      max: 15,
-      connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000
-    })
-  : null;
-
 // =========================================================
-// HYBRID POSTGRES + FALLBACK ENGINE (NEVER FAILS OR SHOWS 0)
+// POSTGRESQL POOL WITH AUTO-RECONNECT & KEEP-ALIVE
 // =========================================================
-let pgHealthy = Boolean(pgPool);
-const BACKUP_FILE = 'professor_backup_db.json';
+const DATABASE_URL = cleanEnv(process.env.DATABASE_URL);
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  max: 15,
+  connectionTimeoutMillis: 20000,
+  idleTimeoutMillis: 30000
+});
 
-const memDB: {
-  users: Map<number, any>;
-  channels: Map<number, any>;
-  questions: any[];
-  syllabus_progress: Map<string, { topic_index: number; cycles_completed: number }>;
-  asked_history: Map<string, Set<number>>;
-  poll_tracking: Map<string, { chat_id: number; correct_index: number; created_at: number }>;
-  test_scores: Map<string, any>;
-  daily_scores: Map<string, any>;
-  monthly_scores: Map<string, any>;
-  bot_settings: Map<string, string>;
-} = {
-  users: new Map(),
-  channels: new Map(),
-  questions: [],
-  syllabus_progress: new Map(),
-  asked_history: new Map(),
-  poll_tracking: new Map(),
-  test_scores: new Map(),
-  daily_scores: new Map(),
-  monthly_scores: new Map(),
-  bot_settings: new Map([
-    ['fsub1_id', ''],
-    ['fsub1_link', ''],
-    ['fsub2_id', ''],
-    ['fsub2_link', ''],
-    ['fsub_enabled', 'false'],
-    ['min_participants_enabled', 'true'],
-    ['service_clean_enabled', 'true'],
-    ['gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'],
-    ['promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'],
-    ['seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'],
-    ['factory_on', 'true']
-  ])
-};
+pool.on('error', (err) => {
+  console.error('PostgreSQL Idle Client Warning:', err.message);
+});
 
-const saveBackupToDisk = () => {
-  try {
-    const data = {
-      users: Array.from(memDB.users.entries()),
-      channels: Array.from(memDB.channels.entries()),
-      questions: memDB.questions.slice(-3000),
-      syllabus_progress: Array.from(memDB.syllabus_progress.entries()),
-      bot_settings: Array.from(memDB.bot_settings.entries())
-    };
-    fs.writeFileSync(BACKUP_FILE, JSON.stringify(data), 'utf-8');
-  } catch {}
-};
-
-const loadBackupFromDisk = () => {
-  try {
-    if (!fs.existsSync(BACKUP_FILE)) return;
-    const raw = JSON.parse(fs.readFileSync(BACKUP_FILE, 'utf-8'));
-    if (Array.isArray(raw.users)) raw.users.forEach(([k, v]: any) => memDB.users.set(Number(k), v));
-    if (Array.isArray(raw.channels)) raw.channels.forEach(([k, v]: any) => memDB.channels.set(Number(k), v));
-    if (Array.isArray(raw.questions)) memDB.questions = raw.questions;
-    if (Array.isArray(raw.syllabus_progress)) raw.syllabus_progress.forEach(([k, v]: any) => memDB.syllabus_progress.set(String(k), v));
-    if (Array.isArray(raw.bot_settings)) raw.bot_settings.forEach(([k, v]: any) => memDB.bot_settings.set(String(k), String(v)));
-  } catch {}
-};
-loadBackupFromDisk();
+let dbStatusText = '⏳ Connecting to PostgreSQL...';
 
 const SCHEDULE_15H = [
   'HISTORY', 'GEOGRAPHY', 'ECONOMY', 'ENVIRONMENT', 'POLITY', 'CURRENT AFFAIRS',
@@ -157,15 +95,19 @@ const activeTests = new Map<number, { timer: NodeJS.Timeout; subject: string; cu
 const quizLobbies = new Map<number, { users: Map<number, string>; subject: string; updatedAt: number }>();
 const reminderMsgIds = new Map<number, number[]>();
 const userStates = new Map<number, { action: string; targetId?: number; meta?: string }>();
+const cfgCache = new Map<string, { val: string; ts: number }>();
+const banCache = new Map<number, { banned: boolean; ts: number }>();
+
 let isSeedingNow = false;
 let seedingStartedAt = 0;
 let lastSeedReport = 'Initializing Multi-Engine Seeder...';
 let apiKeyCursor = 0;
 let discoveredGeminiModels: string[] = [];
+let discoveredGroqModels: string[] = [];
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
 
-const fetchWithTimeout = async (url: string, options: any = {}, timeoutMs: number = 24000) => {
+const fetchWithTimeout = async (url: string, options: any = {}, timeoutMs: number = 22000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -196,13 +138,12 @@ const getTodayKey = (): string => {
   return ist.getUTCFullYear() + '-' + String(ist.getUTCMonth() + 1).padStart(2, '0') + '-' + String(ist.getUTCDate()).padStart(2, '0');
 };
 
-const initDB = async () => {
-  if (!pgPool) {
-    pgHealthy = false;
-    return;
-  }
+// =========================================================
+// DATABASE INITIALIZATION & 4-MINUTE KEEP-ALIVE HEARTBEAT
+// =========================================================
+const initDB = async (): Promise<boolean> => {
   try {
-    await pgPool.query('SELECT 1');
+    await pool.query('SELECT 1');
     const queries = [
       "CREATE TABLE IF NOT EXISTS users (telegram_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT, is_banned BOOLEAN DEFAULT FALSE, target_exam TEXT DEFAULT 'UPSC / UPPSC', preferred_subjects TEXT[] DEFAULT ARRAY['HISTORY','POLITY','GEOGRAPHY','CURRENT AFFAIRS'], alerts_enabled BOOLEAN DEFAULT TRUE, referred_by BIGINT DEFAULT NULL, ref_credited BOOLEAN DEFAULT FALSE, wallet_balance INT DEFAULT 0, referral_count INT DEFAULT 0, last_cleared_at TEXT DEFAULT NULL, joined_at TIMESTAMP DEFAULT NOW())",
       "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT DEFAULT NULL",
@@ -230,142 +171,51 @@ const initDB = async () => {
       "CREATE TABLE IF NOT EXISTS bot_settings (key TEXT PRIMARY KEY, value TEXT)",
       "INSERT INTO bot_settings (key, value) VALUES ('fsub1_id', ''), ('fsub1_link', ''), ('fsub2_id', ''), ('fsub2_link', ''), ('fsub_enabled', 'false'), ('min_participants_enabled', 'true'), ('service_clean_enabled', 'true'), ('gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'), ('promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'), ('seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'), ('factory_on', 'true') ON CONFLICT (key) DO NOTHING"
     ];
-    for (const q of queries) await pgPool.query(q).catch(() => {});
-    pgHealthy = true;
-    console.log('Professor V6.5 PostgreSQL Database Ready!');
+    for (const q of queries) await pool.query(q).catch(() => {});
+    dbStatusText = '🟢 PostgreSQL Connected & Active';
+    console.log('Professor V6.7 PostgreSQL Database Connected & Verified!');
+    return true;
   } catch (e: any) {
-    pgHealthy = false;
-    console.log('PostgreSQL offline, using Smart Hybrid Memory/JSON Database:', e?.message);
+    dbStatusText = '🔴 DB Connection Error: ' + String(e?.message || 'Check DATABASE_URL').substring(0, 45);
+    console.error('Database Init Error:', e?.message);
+    return false;
   }
 };
 initDB();
 
-const getCfg = async (k: string): Promise<string> => {
-  if (pgHealthy && pgPool) {
-    try {
-      const r = await pgPool.query('SELECT value FROM bot_settings WHERE key=$1', [k]);
-      if (r.rows[0]?.value !== undefined) {
-        memDB.bot_settings.set(k, r.rows[0].value);
-        return r.rows[0].value;
-      }
-    } catch {
-      pgHealthy = false;
-    }
+// Keep PostgreSQL awake 24/7 so Supabase/Neon never pauses it again
+setInterval(async () => {
+  try {
+    await pool.query('SELECT 1');
+    dbStatusText = '🟢 PostgreSQL Connected & Active';
+  } catch (e: any) {
+    dbStatusText = '🔴 DB Disconnected (' + String(e?.message || '').substring(0, 35) + ')';
   }
-  return memDB.bot_settings.get(k) || '';
+}, 240000);
+
+const getCfg = async (k: string): Promise<string> => {
+  const cached = cfgCache.get(k);
+  if (cached && Date.now() - cached.ts < 90000) return cached.val;
+  const val = (await pool.query('SELECT value FROM bot_settings WHERE key=$1', [k]).catch(() => ({ rows: [] }))).rows[0]?.value || '';
+  if (val) cfgCache.set(k, { val, ts: Date.now() });
+  return val;
 };
 
 const setCfg = async (k: string, v: string) => {
-  memDB.bot_settings.set(k, v);
-  saveBackupToDisk();
-  if (pgHealthy && pgPool) {
-    await pgPool.query('INSERT INTO bot_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=$2', [k, v]).catch(() => {});
-  }
-};
-
-const registerUserInDB = async (uid: number, username: string, firstName: string, refBy: number | null = null) => {
-  const existing = memDB.users.get(uid);
-  if (!existing) {
-    memDB.users.set(uid, {
-      telegram_id: uid,
-      username,
-      first_name: firstName,
-      is_banned: false,
-      target_exam: 'UPSC / UPPSC',
-      preferred_subjects: ['HISTORY', 'POLITY', 'GEOGRAPHY', 'CURRENT AFFAIRS'],
-      alerts_enabled: true,
-      referred_by: refBy,
-      ref_credited: false,
-      wallet_balance: 0,
-      referral_count: 0,
-      last_cleared_at: null
-    });
-  } else {
-    existing.username = username;
-    existing.first_name = firstName;
-  }
-  saveBackupToDisk();
-  if (pgHealthy && pgPool) {
-    await pgPool.query(
-      'INSERT INTO users(telegram_id, username, first_name, referred_by, ref_credited) VALUES($1,$2,$3,$4,FALSE) ON CONFLICT(telegram_id) DO UPDATE SET username=$2, first_name=$3',
-      [uid, username, firstName, refBy]
-    ).catch(() => {});
-  }
-};
-
-const registerChannelInDB = async (chatId: number, title: string, chatType: string, ownerId: number, approved: string = 'APPROVED') => {
-  const existing = memDB.channels.get(chatId);
-  if (!existing) {
-    memDB.channels.set(chatId, {
-      chat_id: chatId,
-      title,
-      chat_type: chatType,
-      owner_id: ownerId,
-      is_active: true,
-      approval_status: approved,
-      custom_caption: null,
-      trial_ends_at: new Date(Date.now() + 30 * 86400 * 1000).toISOString(),
-      sub_ends_at: null,
-      checkpoints: {}
-    });
-  } else {
-    existing.title = title;
-    existing.chat_type = chatType;
-    existing.is_active = true;
-  }
-  saveBackupToDisk();
-  if (pgHealthy && pgPool) {
-    await pgPool.query(
-      'INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,$2,$3,$4,TRUE,$5) ON CONFLICT(chat_id) DO UPDATE SET title=$2, chat_type=$3, is_active=TRUE',
-      [chatId, title, chatType, ownerId, approved]
-    ).catch(() => {});
-  }
-};
-
-const fetchChannelsList = async (onlyApprovedActive: boolean = false): Promise<any[]> => {
-  if (pgHealthy && pgPool) {
-    try {
-      const q = onlyApprovedActive
-        ? "SELECT * FROM channels WHERE is_active=TRUE AND approval_status='APPROVED'"
-        : 'SELECT * FROM channels ORDER BY title LIMIT 35';
-      const r = await pgPool.query(q);
-      if (r.rows.length > 0) {
-        r.rows.forEach((row: any) => memDB.channels.set(Number(row.chat_id), row));
-        return r.rows;
-      }
-    } catch {
-      pgHealthy = false;
-    }
-  }
-  const all = Array.from(memDB.channels.values());
-  return onlyApprovedActive ? all.filter(c => c.is_active && c.approval_status === 'APPROVED') : all;
-};
-
-const fetchSingleChannel = async (chatId: number): Promise<any | null> => {
-  if (pgHealthy && pgPool) {
-    try {
-      const r = await pgPool.query('SELECT * FROM channels WHERE chat_id=$1', [chatId]);
-      if (r.rows[0]) {
-        memDB.channels.set(chatId, r.rows[0]);
-        return r.rows[0];
-      }
-    } catch {
-      pgHealthy = false;
-    }
-  }
-  return memDB.channels.get(chatId) || null;
+  cfgCache.set(k, { val: v, ts: Date.now() });
+  return pool.query('INSERT INTO bot_settings(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=$2', [k, v]).catch(() => {});
 };
 
 // =========================================================
-// GROUP SERVICE MESSAGE AUTO-CLEANER & AUTO-GROUP DISCOVERY
+// GROUP AUTO-REGISTRATION & SERVICE MESSAGE AUTO-CLEANER
 // =========================================================
 bot.use(async (ctx, next) => {
-  if (ctx.from) {
-    registerUserInDB(ctx.from.id, ctx.from.username || 'student', ctx.from.first_name || 'Student').catch(() => {});
-  }
   if (ctx.chat && ['group', 'supergroup', 'channel'].includes(ctx.chat.type)) {
     const gChat: any = ctx.chat;
-    registerChannelInDB(ctx.chat.id, gChat.title || 'Quiz Group', ctx.chat.type, ctx.from?.id || Number(ADMIN_ID), 'APPROVED').catch(() => {});
+    pool.query(
+      "INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,$2,$3,$4,TRUE,'APPROVED') ON CONFLICT(chat_id) DO UPDATE SET title=$2, is_active=TRUE",
+      [ctx.chat.id, gChat.title || 'Quiz Group', ctx.chat.type, ctx.from?.id || Number(ADMIN_ID)]
+    ).catch(() => {});
   }
 
   const msgAny: any = ctx.message || ctx.channelPost;
@@ -383,9 +233,16 @@ bot.use(async (ctx, next) => {
       return;
     }
   }
-  if (ctx.from && !isMaster(ctx.from.id)) {
-    const uMem = memDB.users.get(ctx.from.id);
-    if (uMem?.is_banned) {
+  if (ctx.from) {
+    if (isMaster(ctx.from.id)) return next();
+    const uid = ctx.from.id;
+    let bState = banCache.get(uid);
+    if (!bState || Date.now() - bState.ts > 300000) {
+      const r = await pool.query('SELECT is_banned FROM users WHERE telegram_id=$1', [uid]).catch(() => ({ rows: [] }));
+      bState = { banned: Boolean(r.rows[0]?.is_banned), ts: Date.now() };
+      banCache.set(uid, bState);
+    }
+    if (bState.banned) {
       if (ctx.chat?.type === 'private') return ctx.reply('🚫 आपको एडमिन द्वारा इस बॉट से प्रतिबंधित किया गया है।');
       return;
     }
@@ -416,19 +273,12 @@ const checkTwoFSub = async (uid: number) => {
 
 const creditReferralIfEligible = async (uid: number) => {
   try {
-    const u = memDB.users.get(uid);
-    if (u && u.referred_by && !u.ref_credited && Number(u.referred_by) !== uid) {
-      u.ref_credited = true;
-      const refUser = memDB.users.get(Number(u.referred_by));
-      if (refUser) {
-        refUser.wallet_balance = (refUser.wallet_balance || 0) + 5;
-        refUser.referral_count = (refUser.referral_count || 0) + 1;
-      }
-      saveBackupToDisk();
-      if (pgHealthy && pgPool) {
-        await pgPool.query('UPDATE users SET ref_credited = TRUE WHERE telegram_id = $1', [uid]).catch(() => {});
-        await pgPool.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + 5, referral_count = COALESCE(referral_count, 0) + 1 WHERE telegram_id = $1', [u.referred_by]).catch(() => {});
-      }
+    const res = await pool.query('SELECT referred_by, ref_credited, first_name FROM users WHERE telegram_id=$1', [uid]);
+    if (res.rows.length === 0) return;
+    const u = res.rows[0];
+    if (u.referred_by && !u.ref_credited && Number(u.referred_by) !== uid) {
+      await pool.query('UPDATE users SET ref_credited = TRUE WHERE telegram_id = $1', [uid]);
+      await pool.query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + 5, referral_count = COALESCE(referral_count, 0) + 1 WHERE telegram_id = $1', [u.referred_by]);
       await safeSend(u.referred_by, '🎉 *बधाई हो! नया रेफ़रल सफल हुआ!*\n👤 छात्र: *' + (u.first_name || 'Student') + '* ने बॉट जॉइन कर लिया है।\n💰 आपके वॉलेट में *+₹5* जोड़ दिए गए हैं!');
     }
   } catch {}
@@ -474,32 +324,26 @@ const sendPdfStarsInvoice = async (destChatId: number, subject: string) => {
   } catch (e) { console.error('PDF Invoice Error:', e); }
 };
 
-const fetchQuestionsForSubject = async (subject: string, limit: number = 50): Promise<any[]> => {
-  const isMixed = subject.startsWith('MIXED');
-  if (pgHealthy && pgPool) {
-    try {
-      const r = await pgPool.query(
-        'SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) ORDER BY is_pyq DESC, RANDOM() LIMIT $3',
-        [isMixed, '%' + subject + '%', limit]
-      );
-      if (r.rows.length > 0) return r.rows;
-    } catch {}
-  }
-  const filtered = memDB.questions.filter(q => isMixed || String(q.subject).toUpperCase().includes(subject.toUpperCase()));
-  return filtered.sort(() => Math.random() - 0.5).slice(0, limit);
-};
-
 const deliverOfflineTestPaper = async (chatId: number, subject: string, asTextOnly: boolean = false) => {
   const isMixed = subject.startsWith('MIXED');
-  let rows = await fetchQuestionsForSubject(subject, 50);
-  if (rows.length === 0) {
+  let qRes = await pool.query(
+    'SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) ORDER BY is_pyq DESC, RANDOM() LIMIT 50',
+    [isMixed, '%' + subject + '%']
+  ).catch(() => ({ rows: [] }));
+
+  if (qRes.rows.length === 0) {
     await generateQuestionsBatch(isMixed ? undefined : subject);
-    rows = await fetchQuestionsForSubject(subject, 50);
+    qRes = await pool.query(
+      'SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) ORDER BY is_pyq DESC, RANDOM() LIMIT 50',
+      [isMixed, '%' + subject + '%']
+    ).catch(() => ({ rows: [] }));
   }
-  if (rows.length === 0) {
+
+  if (qRes.rows.length === 0) {
     return safeSend(chatId, '⏳ *' + subject + '* के प्रश्न अभी तैयार किए जा रहे हैं। कृपया 1 मिनट बाद प्रयास करें।');
   }
 
+  const rows = qRes.rows;
   const dateStr = new Date(Date.now() + 5.5 * 3600 * 1000).toLocaleDateString('hi-IN');
   const examTarget = EXAM_TARGET_MAP[subject] || 'All Competitive Exams';
 
@@ -606,15 +450,7 @@ bot.on('successful_payment', async (ctx) => {
   const payload = ctx.message.successful_payment.invoice_payload;
   if (payload.startsWith('sub_group_')) {
     const targetChatId = Number(payload.replace('sub_group_', ''));
-    const g = memDB.channels.get(targetChatId);
-    if (g) {
-      g.sub_ends_at = new Date(Date.now() + 365 * 86400 * 1000).toISOString();
-      g.approval_status = 'APPROVED';
-      g.is_active = true;
-    }
-    if (pgHealthy && pgPool) {
-      await pgPool.query("UPDATE channels SET sub_ends_at = NOW() + INTERVAL '365 days', approval_status = 'APPROVED', is_active = TRUE WHERE chat_id = $1", [targetChatId]).catch(() => {});
-    }
+    await pool.query("UPDATE channels SET sub_ends_at = NOW() + INTERVAL '365 days', approval_status = 'APPROVED', is_active = TRUE WHERE chat_id = $1", [targetChatId]);
     await safeSend(ctx.chat.id, '🎉 *भुगतान सफल (100 Stars)!*\nआपका ग्रुप/चैनल पूरे *1 साल (365 दिन)* के लिए एक्टिवेट कर दिया गया है!');
     if (ADMIN_ID) await safeSend(ADMIN_ID, '⭐ *100 Stars Group Payment Received!* Group: ' + targetChatId);
   } else if (payload.startsWith('pdf_paper_')) {
@@ -652,13 +488,53 @@ bot.action(/^adm_sendtxt_(\d+)_(.+)$/, async (ctx) => {
 });
 
 // =========================================================
-// MULTI-ENGINE AI SEEDER: GROQ (gsk_) + GEMINI (AIza) + CHATGPT
+// DYNAMIC GROQ + GEMINI MODEL DISCOVERY & POSTGRES SEEDER
 // =========================================================
 let seedCursor = 0;
 
+const getActiveGroqModels = async (gKey: string): Promise<string[]> => {
+  if (discoveredGroqModels.length > 0) return discoveredGroqModels;
+  try {
+    const r = await fetchWithTimeout('https://api.groq.com/openai/v1/models', {
+      headers: { 'Authorization': 'Bearer ' + gKey }
+    }, 12000);
+    const d: any = await r.json();
+    if (d && Array.isArray(d.data)) {
+      const valid = d.data
+        .map((m: any) => String(m.id || ''))
+        .filter((id: string) =>
+          id &&
+          !id.includes('whisper') &&
+          !id.includes('guard') &&
+          !id.includes('tts') &&
+          !id.includes('playai') &&
+          !id.includes('vision') &&
+          !id.includes('embed') &&
+          !id.includes('safeguard') &&
+          !id.includes('orpheus')
+        );
+      valid.sort((a: string, b: string) => {
+        const score = (s: string) =>
+          (s.includes('llama-3.3') ? 25 : 0) +
+          (s.includes('llama-4') ? 22 : 0) +
+          (s.includes('llama') ? 15 : 0) +
+          (s.includes('qwen') ? 12 : 0) +
+          (s.includes('gemma') ? 10 : 0) +
+          (s.includes('deepseek') ? 8 : 0);
+        return score(b) - score(a);
+      });
+      if (valid.length > 0) {
+        discoveredGroqModels = valid.slice(0, 5);
+        console.log('Active Groq Models:', discoveredGroqModels.join(', '));
+        return discoveredGroqModels;
+      }
+    }
+  } catch {}
+  return ['llama-3.3-70b-versatile', 'gemma2-9b-it'];
+};
+
 const getActiveGeminiModels = async (apiKey: string): Promise<string[]> => {
   if (discoveredGeminiModels.length > 0) return discoveredGeminiModels;
-  const fallback = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
   try {
     const r = await fetchWithTimeout('https://generativelanguage.googleapis.com/v1beta/models?key=' + apiKey, {}, 12000);
     const d: any = await r.json();
@@ -667,71 +543,83 @@ const getActiveGeminiModels = async (apiKey: string): Promise<string[]> => {
         .filter((m: any) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
         .map((m: any) => String(m.name).replace('models/', ''))
         .filter((name: string) =>
-          name.includes('gemini') &&
-          name.includes('flash') &&
+          (name.includes('gemini') || name.includes('gemma')) &&
           !name.includes('vision') &&
           !name.includes('embedding') &&
           !name.includes('image') &&
           !name.includes('tts') &&
           !name.includes('audio')
         );
+      valid.sort((a: string, b: string) => (b.includes('flash') ? 10 : 0) - (a.includes('flash') ? 10 : 0));
       if (valid.length > 0) {
-        discoveredGeminiModels = Array.from(new Set([...valid, ...fallback])).slice(0, 5);
-        console.log('Verified Gemini Models:', discoveredGeminiModels.join(', '));
+        discoveredGeminiModels = valid.slice(0, 5);
+        console.log('Active Gemini Models:', discoveredGeminiModels.join(', '));
         return discoveredGeminiModels;
       }
     }
   } catch {}
-  return fallback;
+  return ['gemini-flash-latest', 'gemini-2.0-flash', 'gemini-1.5-flash'];
 };
 
 const getNextSubjectAndTopic = async (forcedSubject?: string): Promise<{ subject: string; topic: string }> => {
   const coreSubjects = SCHEDULE_15H.slice(0, 13);
-  const subject = forcedSubject || coreSubjects[seedCursor++ % coreSubjects.length];
-  const topics = SYLLABUS_MAP[subject] || ['संपूर्ण पाठ्यक्रम एवं महत्वपूर्ण प्रश्न'];
+  let subject = forcedSubject || '';
 
-  let tIdx = memDB.syllabus_progress.get(subject)?.topic_index || 0;
-  let cycles = memDB.syllabus_progress.get(subject)?.cycles_completed || 0;
+  if (!subject) {
+    const countsRes = await pool.query('SELECT subject, COUNT(*) as c FROM questions GROUP BY subject').catch(() => ({ rows: [] }));
+    const countMap: Record<string, number> = {};
+    countsRes.rows.forEach((r: any) => { countMap[r.subject] = Number(r.c); });
 
-  if (pgHealthy && pgPool) {
-    try {
-      const progRes = await pgPool.query('SELECT topic_index, cycles_completed FROM syllabus_progress WHERE subject=$1', [subject]);
-      if (progRes.rows[0]) {
-        tIdx = Number(progRes.rows[0].topic_index || 0);
-        cycles = Number(progRes.rows[0].cycles_completed || 0);
-      }
-    } catch {}
+    let minSub = '';
+    let minVal = 999999;
+    for (const s of coreSubjects) {
+      const c = countMap[s] || 0;
+      if (c < minVal) { minVal = c; minSub = s; }
+    }
+    if (minSub && minVal < 200 && seedCursor % 2 === 0) subject = minSub;
   }
 
+  if (!subject) subject = coreSubjects[seedCursor++ % coreSubjects.length];
+  else seedCursor++;
+
+  const topics = SYLLABUS_MAP[subject] || ['संपूर्ण पाठ्यक्रम एवं महत्वपूर्ण प्रश्न'];
+  const progRes = await pool.query('SELECT topic_index, cycles_completed FROM syllabus_progress WHERE subject=$1', [subject]).catch(() => ({ rows: [] }));
+
+  let tIdx = Number(progRes.rows[0]?.topic_index || 0);
+  let cycles = Number(progRes.rows[0]?.cycles_completed || 0);
   if (tIdx >= topics.length) { tIdx = 0; cycles++; }
+
   const topic = topics[tIdx];
   const nextIdx = (tIdx + 1) % topics.length;
   const nextCycles = tIdx + 1 >= topics.length ? cycles + 1 : cycles;
 
-  memDB.syllabus_progress.set(subject, { topic_index: nextIdx, cycles_completed: nextCycles });
-  saveBackupToDisk();
-
-  if (pgHealthy && pgPool) {
-    await pgPool.query(
-      'INSERT INTO syllabus_progress (subject, topic_index, cycles_completed) VALUES ($1, $2, $3) ON CONFLICT (subject) DO UPDATE SET topic_index = $2, cycles_completed = $3',
-      [subject, nextIdx, nextCycles]
-    ).catch(() => {});
-  }
+  await pool.query(
+    'INSERT INTO syllabus_progress (subject, topic_index, cycles_completed) VALUES ($1, $2, $3) ON CONFLICT (subject) DO UPDATE SET topic_index = $2, cycles_completed = $3',
+    [subject, nextIdx, nextCycles]
+  ).catch(() => {});
 
   return { subject, topic };
 };
 
 const parseAIJsonArray = (raw: string): any[] | null => {
   try {
-    const cleaned = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(cleaned);
-    if (Array.isArray(parsed)) return parsed;
-    if (parsed && Array.isArray(parsed.questions)) return parsed.questions;
+    const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```json/gi, '').replace(/```/g, '').trim();
     const firstBracket = cleaned.indexOf('[');
-    const lastBracket = cleaned.lastIndexOf(']');
-    if (firstBracket !== -1 && lastBracket !== -1) {
-      const subArr = JSON.parse(cleaned.substring(firstBracket, lastBracket + 1));
-      if (Array.isArray(subArr)) return subArr;
+    const firstBrace = cleaned.indexOf('{');
+    if (firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
+      const lastBracket = cleaned.lastIndexOf(']');
+      if (lastBracket !== -1) {
+        const arr = JSON.parse(cleaned.substring(firstBracket, lastBracket + 1));
+        if (Array.isArray(arr)) return arr;
+      }
+    }
+    if (firstBrace !== -1) {
+      const lastBrace = cleaned.lastIndexOf('}');
+      if (lastBrace !== -1) {
+        const parsed = JSON.parse(cleaned.substring(firstBrace, lastBrace + 1));
+        if (Array.isArray(parsed)) return parsed;
+        if (parsed && Array.isArray(parsed.questions)) return parsed.questions;
+      }
     }
   } catch {}
   return null;
@@ -739,55 +627,36 @@ const parseAIJsonArray = (raw: string): any[] | null => {
 
 const saveQuestionsToDB = async (arr: any[], subject: string, topic: string): Promise<number> => {
   let saved = 0;
-  const memTexts = new Set(memDB.questions.map(q => q.question_text));
-
   for (const q of arr) {
     if (!q || !q.question_text || !q.option_a || !q.option_b || !q.option_c || !q.option_d || !q.correct_option) continue;
     const cOpt = q.correct_option.toString().trim().toUpperCase().charAt(0);
     if (!['A', 'B', 'C', 'D'].includes(cOpt)) continue;
+    if (q.option_a === q.option_b && q.option_b === q.option_c) continue;
 
-    const qText = String(q.question_text).trim().substring(0, 230);
-    const qItem = {
-      id: Date.now() + Math.floor(Math.random() * 100000) + saved,
-      subject,
-      topic,
-      question_text: qText,
-      option_a: String(q.option_a).trim().substring(0, 95),
-      option_b: String(q.option_b).trim().substring(0, 95),
-      option_c: String(q.option_c).trim().substring(0, 95),
-      option_d: String(q.option_d).trim().substring(0, 95),
-      correct_option: cOpt,
-      explanation: String(q.explanation || 'NCERT एवं आयोग की आधिकारिक उत्तर-कुंजी द्वारा सत्यापित।').trim().substring(0, 180),
-      difficulty: DIFF_TIERS.includes(q.difficulty) ? q.difficulty : 'Medium',
-      is_pyq: Boolean(q.is_pyq)
-    };
+    const res = await pool.query(
+      'INSERT INTO questions (subject, topic, question_text, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, is_pyq) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (question_text) DO NOTHING RETURNING id',
+      [
+        subject,
+        topic,
+        String(q.question_text).trim().substring(0, 230),
+        String(q.option_a).trim().substring(0, 95),
+        String(q.option_b).trim().substring(0, 95),
+        String(q.option_c).trim().substring(0, 95),
+        String(q.option_d).trim().substring(0, 95),
+        cOpt,
+        String(q.explanation || 'NCERT एवं आयोग की आधिकारिक उत्तर-कुंजी द्वारा सत्यापित।').trim().substring(0, 180),
+        DIFF_TIERS.includes(q.difficulty) ? q.difficulty : 'Medium',
+        Boolean(q.is_pyq)
+      ]
+    ).catch(() => ({ rowCount: 0 }));
 
-    let added = false;
-    if (!memTexts.has(qText)) {
-      memTexts.add(qText);
-      memDB.questions.push(qItem);
-      added = true;
-    }
-
-    if (pgHealthy && pgPool) {
-      try {
-        const res = await pgPool.query(
-          'INSERT INTO questions (subject, topic, question_text, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, is_pyq) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (question_text) DO NOTHING RETURNING id',
-          [qItem.subject, qItem.topic, qItem.question_text, qItem.option_a, qItem.option_b, qItem.option_c, qItem.option_d, qItem.correct_option, qItem.explanation, qItem.difficulty, qItem.is_pyq]
-        );
-        if (res && res.rowCount && res.rowCount > 0) added = true;
-      } catch {
-        pgHealthy = false;
-      }
-    }
-    if (added) saved++;
+    if (res && res.rowCount && res.rowCount > 0) saved++;
   }
-  saveBackupToDisk();
   return saved;
 };
 
 const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean; count: number; sub: string; topic: string; provider: string; error?: string }> => {
-  if (isSeedingNow && (Date.now() - seedingStartedAt > 65000)) isSeedingNow = false;
+  if (isSeedingNow && (Date.now() - seedingStartedAt > 55000)) isSeedingNow = false;
   if (isSeedingNow && !forcedSub) return { ok: false, count: 0, sub: 'BUSY', topic: '', provider: 'NONE' };
   if ((await getCfg('factory_on')) === 'false' && !forcedSub) return { ok: false, count: 0, sub: 'PAUSED', topic: '', provider: 'NONE' };
 
@@ -795,7 +664,6 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
   seedingStartedAt = Date.now();
 
   try {
-    // Collect and auto-classify all keys from GitHub Secrets (GROQ_API_KEY + GEMINI_API_KEY)
     const allRawTokens = [
       process.env.GROQ_API_KEY || '',
       process.env.GEMINI_API_KEY || '',
@@ -814,25 +682,26 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
     const { subject, topic } = await getNextSubjectAndTopic(forcedSub);
     const examTarget = EXAM_TARGET_MAP[subject] || 'UPSC, PSC, SSC, Railway';
-    const batchSalt = Math.floor(1000 + Math.random() * 9000);
+    const salt = Math.floor(1000 + Math.random() * 9000);
 
     const prompt = [
-      'You are an authoritative Indian Competitive Exam Paper Setter for: ' + examTarget + ' (Set #' + batchSalt + ').',
+      'You are an authoritative Indian Competitive Exam Paper Setter for: ' + examTarget + ' (Set #' + salt + ').',
       'Generate 15 unique, 100% fact-checked, NCERT & Official Answer-Key verified MCQs on:',
       'Subject: ' + subject + ' | Specific Topic: ' + topic,
       'Language: Hindi (if subject is ENGLISH, write in English).',
       'Distribution: 3 "Easy", 3 "Medium", 3 "Hard", 3 "Ultra Hard", and 3 "Max Hard" questions.',
       'At least 5 questions MUST be most-repeated Previous Year Questions (mention exam & year like [UPPSC 2023] or [SSC CGL 2022] at end of question_text) with "is_pyq": true.',
-      'Return ONLY a valid JSON Object with a "questions" array of 15 objects, each having keys:',
+      'Return ONLY a valid JSON array of 15 objects, each having keys:',
       '"question_text" (max 205 chars), "option_a", "option_b", "option_c", "option_d" (max 80 chars each), "correct_option" ("A","B","C", or "D"), "explanation" (max 150 chars), "difficulty" ("Easy","Medium","Hard","Ultra Hard","Max Hard"), "is_pyq" (boolean).'
     ].join('\n');
 
     let groqErr = '';
     let geminiErr = '';
 
-    // 1. Try Free Groq Keys (gsk_...) FIRST — Ultra-Fast 1.5s Generation
+    // 1. Try Dynamically Discovered Active Groq Models (gsk_)
     for (const gKey of groqKeys) {
-      for (const mName of ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']) {
+      const groqModels = await getActiveGroqModels(gKey);
+      for (const mName of groqModels) {
         try {
           const r = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
@@ -840,16 +709,15 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             body: JSON.stringify({
               model: mName,
               messages: [
-                { role: 'system', content: 'You are an Indian competitive exam question generator. Always respond with valid JSON containing a "questions" array.' },
+                { role: 'system', content: 'You are an Indian exam question setter. Output strictly a valid JSON array of 15 question objects.' },
                 { role: 'user', content: prompt }
               ],
-              response_format: { type: 'json_object' },
               temperature: 0.7
             })
           }, 22000);
           const d: any = await r.json();
           if (d.error) {
-            groqErr = 'Groq (' + mName + '): ' + String(d.error.message || d.error.code).substring(0, 55);
+            groqErr = 'Groq (' + mName + '): ' + String(d.error.message || d.error.code).substring(0, 50);
             continue;
           }
           const txt = d.choices?.[0]?.message?.content?.trim();
@@ -859,10 +727,10 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
           const saved = await saveQuestionsToDB(arr, subject, topic);
           if (saved > 0) {
-            lastSeedReport = '✅ Groq Free AI (' + mName + ') +' + saved + ' Qs [' + subject + ']';
+            lastSeedReport = '✅ Groq AI (' + mName + ') +' + saved + ' Qs [' + subject + ']';
             console.log(lastSeedReport);
             isSeedingNow = false;
-            return { ok: true, count: saved, sub: subject, topic, provider: 'Groq Free AI (' + mName + ')' };
+            return { ok: true, count: saved, sub: subject, topic, provider: 'Groq AI (' + mName + ')' };
           }
         } catch (err: any) {
           groqErr = 'Groq: ' + (err?.message || 'Timeout');
@@ -870,7 +738,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       }
     }
 
-    // 2. Try All Gemini Keys (AIza...)
+    // 2. Try Dynamically Discovered Active Gemini Models (AIza)
     if (geminiKeys.length > 0) {
       const modelsToTry = await getActiveGeminiModels(geminiKeys[0]);
       for (let k = 0; k < geminiKeys.length; k++) {
@@ -884,12 +752,12 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { responseMimeType: 'application/json', temperature: 0.7 }
+                generationConfig: { temperature: 0.7 }
               })
             }, 22000);
             const d: any = await r.json();
             if (d.error) {
-              if (!geminiErr) geminiErr = 'Gemini (' + model + '): ' + String(d.error.message || d.error.code).substring(0, 55);
+              if (!geminiErr) geminiErr = 'Gemini (' + model + '): ' + String(d.error.message || d.error.code).substring(0, 50);
               continue;
             }
             const txt = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
@@ -912,7 +780,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       }
     }
 
-    // 3. Try OpenAI Keys (sk-...) if present
+    // 3. Try OpenAI Keys (sk-) if present
     for (const sKey of openaiKeys) {
       try {
         const r = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
@@ -920,8 +788,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + sKey },
           body: JSON.stringify({
             model: 'gpt-4o-mini',
-            messages: [{ role: 'user', content: prompt }],
-            response_format: { type: 'json_object' }
+            messages: [{ role: 'user', content: prompt }]
           })
         }, 22000);
         const d: any = await r.json();
@@ -937,7 +804,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       } catch {}
     }
 
-    const errSummary = [groqErr, geminiErr].filter(Boolean).join(' | ') || 'Check GROQ_API_KEY / GEMINI_API_KEY in GitHub Actions';
+    const errSummary = [groqErr, geminiErr].filter(Boolean).join(' | ') || 'Check API Keys';
     lastSeedReport = '❌ ' + errSummary;
     isSeedingNow = false;
     return { ok: false, count: 0, sub: subject, topic, provider: 'NONE', error: errSummary };
@@ -947,7 +814,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
   }
 };
 
-// Non-Stop Auto-Seeder Every 60 Seconds
+// Non-Stop Auto-Seeder Every 60 Seconds into PostgreSQL
 setInterval(() => {
   generateQuestionsBatch().catch(() => {});
 }, 60000);
@@ -957,16 +824,12 @@ setInterval(() => {
 // =========================================================
 const getTopicSummaryMeta = async (subject: string) => {
   const topics = SYLLABUS_MAP[subject] || ['संपूर्ण पाठ्यक्रम'];
-  const tIdx = (memDB.syllabus_progress.get(subject)?.topic_index || 0) % topics.length;
-  const currentTopic = topics[tIdx];
+  const progRes = await pool.query('SELECT topic_index, cycles_completed FROM syllabus_progress WHERE subject=$1', [subject]).catch(() => ({ rows: [] }));
+  const tIdx = Number(progRes.rows[0]?.topic_index || 0);
+  const currentTopic = topics[tIdx % topics.length];
   const prevTopics = topics.slice(Math.max(0, tIdx - 3), tIdx).map(t => t.split(' ')[0] + ' ' + (t.split(' ')[1] || '')).join(', ') || 'प्रारंभिक अध्याय';
-  let totalSubjectQs = memDB.questions.filter(q => q.subject === subject).length;
-  if (pgHealthy && pgPool) {
-    try {
-      const r = await pgPool.query('SELECT COUNT(*) FROM questions WHERE subject=$1', [subject]);
-      totalSubjectQs = Math.max(totalSubjectQs, Number(r.rows[0]?.count || 0));
-    } catch {}
-  }
+  const totalQRes = await pool.query('SELECT COUNT(*) FROM questions WHERE subject=$1', [subject]).catch(() => ({ rows: [{ count: 0 }] }));
+  const totalSubjectQs = Number(totalQRes.rows[0]?.count || 0);
   return { currentTopic, prevTopics, totalSubjectQs };
 };
 
@@ -980,28 +843,18 @@ const announceAndPinLeaderboard = async (chatId: number, subject: string) => {
   try {
     const giftTag = await getCfg('gift_tagline');
     const seoTags = await getCfg('seo_tags');
-    let rows: any[] = [];
-    if (pgHealthy && pgPool) {
-      const top = await pgPool.query('SELECT user_id, username, right_count, wrong_count, net_marks FROM test_scores WHERE chat_id=$1 ORDER BY net_marks DESC, right_count DESC LIMIT 10', [chatId]).catch(() => ({ rows: [] }));
-      rows = top.rows;
-    }
-    if (rows.length === 0) {
-      rows = Array.from(memDB.test_scores.values())
-        .filter(r => Number(r.chat_id) === Number(chatId))
-        .sort((a, b) => Number(b.net_marks) - Number(a.net_marks))
-        .slice(0, 10);
-    }
+    const top = await pool.query('SELECT user_id, username, right_count, wrong_count, net_marks FROM test_scores WHERE chat_id=$1 ORDER BY net_marks DESC, right_count DESC LIMIT 10', [chatId]);
 
     let msg = '🏛 *SUBJECT TEST CLOSED: ' + subject + '* 🏛\n';
     msg += '• 🎯 *Target:* ' + (EXAM_TARGET_MAP[subject] || 'All Exams') + '\n';
     msg += '• ⚖️ *Rule:* +1.00 Right | -0.25 Wrong (1/4 Negative)\n';
     msg += '━━━━━━━━━━━━━━━━━━━━━\n';
 
-    if (rows.length === 0) {
+    if (top.rows.length === 0) {
       msg += 'इस सत्र में किसी भी छात्र का स्कोर दर्ज नहीं हुआ।\n\n';
     } else {
       msg += '🏆 *TOP 10 MERIT LIST (Name ➔ Score):*\n\n';
-      rows.forEach((r, i) => {
+      top.rows.forEach((r, i) => {
         const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖' + (i + 1) + '.';
         const deducted = (Number(r.wrong_count) * 0.25).toFixed(2);
         msg += medal + ' [' + r.username + '](tg://user?id=' + r.user_id + ') ➔ *' + Number(r.net_marks).toFixed(2) + '/50* (✅' + r.right_count + ' ❌' + r.wrong_count + ' ✂️-' + deducted + ')\n';
@@ -1023,24 +876,24 @@ const announceAndPinLeaderboard = async (chatId: number, subject: string) => {
 const announceDailyClosingReport = async () => {
   const dayKey = getTodayKey();
   const giftTag = await getCfg('gift_tagline');
-  const chs = await fetchChannelsList(true);
+  const chs = await pool.query("SELECT chat_id FROM channels WHERE is_active=TRUE AND approval_status='APPROVED'").catch(() => ({ rows: [] }));
 
-  for (const c of chs) {
+  for (const c of chs.rows) {
     const cid = Number(c.chat_id);
-    const rows = Array.from(memDB.daily_scores.values())
-      .filter(r => r.day_key === dayKey && Number(r.chat_id) === cid)
-      .sort((a, b) => Number(b.net_marks) - Number(a.net_marks))
-      .slice(0, 10);
+    const top = await pool.query(
+      'SELECT user_id, username, right_count, wrong_count, net_marks FROM daily_scores WHERE day_key=$1 AND chat_id=$2 ORDER BY net_marks DESC LIMIT 10',
+      [dayKey, cid]
+    ).catch(() => ({ rows: [] }));
 
     let msg = '🌙 *DAILY CLOSING REPORT (' + dayKey + ')* 🌙\n';
     msg += '• 📊 *Summary:* 15 Hours (13 Subjects + 2 Mixed Tests Completed)\n';
     msg += '━━━━━━━━━━━━━━━━━━━━━\n';
 
-    if (rows.length === 0) {
+    if (top.rows.length === 0) {
       msg += 'आज के सत्र समाप्त हुए। कल सुबह 8:00 AM पर पुनः लाइव टेस्ट शुरू होंगे!\n\n';
     } else {
       msg += '👑 *TODAY OVERALL TOP 10 CHAMPIONS:*\n\n';
-      rows.forEach((r, i) => {
+      top.rows.forEach((r, i) => {
         const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖' + (i + 1) + '.';
         const deducted = (Number(r.wrong_count) * 0.25).toFixed(2);
         msg += medal + ' [' + r.username + '](tg://user?id=' + r.user_id + ') ➔ *' + Number(r.net_marks).toFixed(2) + ' Pts* (✅' + r.right_count + ' ❌' + r.wrong_count + ' ✂️-' + deducted + ')\n';
@@ -1062,17 +915,10 @@ const stopTestInGroup = async (chatId: number, saveCheckpoint: boolean = true) =
   activeTests.delete(chatId);
 
   if (saveCheckpoint && running.currentQ < 50) {
-    const ch = memDB.channels.get(chatId);
-    if (ch) {
-      ch.checkpoints = { ...(ch.checkpoints || {}), [running.subject]: running.currentQ };
-      saveBackupToDisk();
-    }
-    if (pgHealthy && pgPool) {
-      await pgPool.query("UPDATE channels SET checkpoints = jsonb_set(COALESCE(checkpoints, '{}'::jsonb), ARRAY[$1], to_jsonb($2::int)) WHERE chat_id = $3", [running.subject, running.currentQ, chatId]).catch(() => {});
-    }
+    await pool.query("UPDATE channels SET checkpoints = jsonb_set(COALESCE(checkpoints, '{}'::jsonb), ARRAY[$1], to_jsonb($2::int)) WHERE chat_id = $3", [running.subject, running.currentQ, chatId]).catch(() => {});
     await safeSend(
       chatId,
-      '⏸ *' + running.subject + ' टेस्ट Q.' + running.currentQ + ' पर रुका।* अगले राउंड में यहीं से आगे बढ़ेगा!\n👇 *3 छात्र Ready बटन दबाकर या एडमिन 1-Click से तुरंत टेस्ट शुरू कर सकते हैं:*',
+      '⏸ *' + running.subject + ' टेस्ट Q.' + running.currentQ + ' पर रुका।* अगले राउंड में यहीं से आगे बढ़ेगा!\n👇 *3 छात्र Ready बटन दबाकर या एडमिन 1-Click से तुरंत टेस्ट दोबारा शुरू कर सकते हैं:*',
       Markup.inlineKeyboard([
         [Markup.button.callback('🙋‍♂️ Ready to Resume (0/3)', 'ready_quiz_' + chatId), Markup.button.callback('👑 Admin Start', 'gstart_' + chatId)]
       ])
@@ -1108,43 +954,17 @@ const openThreePlayerLobby = async (chatId: number, subject: string) => {
   );
 };
 
-const pickNextQuestion = async (chatId: number, subject: string, targetDiff: string, preferPyq: boolean): Promise<any | null> => {
-  const isMixed = subject.startsWith('MIXED');
-  const askedSet = memDB.asked_history.get(String(chatId)) || new Set<number>();
-
-  if (pgHealthy && pgPool) {
-    try {
-      let qRes = await pgPool.query(
-        'SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) AND difficulty = $3 AND id NOT IN (SELECT question_id FROM asked_history WHERE chat_id = $4) ORDER BY (is_pyq = $5) DESC, RANDOM() LIMIT 1',
-        [isMixed, '%' + subject + '%', targetDiff, chatId, preferPyq]
-      );
-      if (qRes.rows.length === 0) {
-        qRes = await pgPool.query('SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) AND id NOT IN (SELECT question_id FROM asked_history WHERE chat_id = $3) ORDER BY RANDOM() LIMIT 1', [isMixed, '%' + subject + '%', chatId]);
-      }
-      if (qRes.rows[0]) return qRes.rows[0];
-    } catch {}
-  }
-
-  let poolList = memDB.questions.filter(q => (isMixed || String(q.subject).toUpperCase().includes(subject.toUpperCase())) && !askedSet.has(q.id));
-  if (poolList.length === 0) {
-    await generateQuestionsBatch(isMixed ? undefined : subject);
-    askedSet.clear();
-    poolList = memDB.questions.filter(q => isMixed || String(q.subject).toUpperCase().includes(subject.toUpperCase()));
-  }
-  if (poolList.length === 0) return null;
-  return poolList[Math.floor(Math.random() * poolList.length)];
-};
-
 const startHourlySubjectTest = async (chatId: number, subject: string, resumeFromMinuteOffset: number = 0, forceStart: boolean = false) => {
   if (activeTests.has(chatId)) await stopTestInGroup(chatId, true);
   await clearOldReminders(chatId);
   quizLobbies.delete(chatId);
 
-  let ch = await fetchSingleChannel(chatId);
-  if (!ch) {
-    await registerChannelInDB(chatId, 'Quiz Group', 'supergroup', Number(ADMIN_ID), 'APPROVED');
-    ch = await fetchSingleChannel(chatId);
+  let chRes = await pool.query('SELECT * FROM channels WHERE chat_id=$1', [chatId]).catch(() => ({ rows: [] }));
+  if (chRes.rows.length === 0) {
+    await pool.query("INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,'Quiz Group','supergroup',$2,TRUE,'APPROVED') ON CONFLICT DO NOTHING", [chatId, Number(ADMIN_ID)]).catch(() => {});
+    chRes = await pool.query('SELECT * FROM channels WHERE chat_id=$1', [chatId]).catch(() => ({ rows: [] }));
   }
+  const ch = chRes.rows[0] || { chat_id: chatId, title: 'Quiz Group', chat_type: 'supergroup', approval_status: 'APPROVED', is_active: true };
 
   const perm = isGroupAllowedToPost(ch);
   if (!perm.ok) {
@@ -1157,22 +977,17 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
   }
 
   const minCheckOn = (await getCfg('min_participants_enabled')) !== 'false';
-  if (minCheckOn && !forceStart && chatId < 0 && resumeFromMinuteOffset === 0 && ch?.chat_type !== 'channel') {
+  if (minCheckOn && !forceStart && chatId < 0 && resumeFromMinuteOffset === 0 && ch.chat_type !== 'channel') {
     return openThreePlayerLobby(chatId, subject);
   }
 
-  const savedQ = Number(ch?.checkpoints?.[subject] || 0);
+  const savedQ = Number(ch.checkpoints?.[subject] || 0);
   let currentQ = savedQ > 0 && savedQ < 50 ? savedQ : resumeFromMinuteOffset;
-  if (currentQ === 0) {
-    for (const k of Array.from(memDB.test_scores.keys())) {
-      if (k.startsWith(`${chatId}_`)) memDB.test_scores.delete(k);
-    }
-    if (pgHealthy && pgPool) await pgPool.query('DELETE FROM test_scores WHERE chat_id=$1', [chatId]).catch(() => {});
-  }
+  if (currentQ === 0) await pool.query('DELETE FROM test_scores WHERE chat_id=$1', [chatId]).catch(() => {});
 
   const meta = await getTopicSummaryMeta(subject);
   const seoTags = await getCfg('seo_tags');
-  const customCap = ch?.custom_caption ? '• 📢 *Note:* ' + ch.custom_caption + '\n' : '';
+  const customCap = ch.custom_caption ? '• 📢 *Note:* ' + ch.custom_caption + '\n' : '';
 
   await safeSend(
     chatId,
@@ -1194,30 +1009,43 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
 
     if (currentQ > 50) {
       await stopTestInGroup(chatId, false);
-      if (ch && ch.checkpoints) ch.checkpoints[subject] = 0;
-      if (pgHealthy && pgPool) {
-        await pgPool.query("UPDATE channels SET checkpoints = jsonb_set(COALESCE(checkpoints, '{}'::jsonb), ARRAY[$1], '0'::jsonb) WHERE chat_id=$2", [subject, chatId]).catch(() => {});
-      }
+      await pool.query("UPDATE channels SET checkpoints = jsonb_set(COALESCE(checkpoints, '{}'::jsonb), ARRAY[$1], '0'::jsonb) WHERE chat_id=$2", [subject, chatId]).catch(() => {});
       await announceAndPinLeaderboard(chatId, subject);
       return;
     }
 
     const tierIndex = Math.min(4, Math.floor((currentQ - 1) / 10));
     const targetDiff = DIFF_TIERS[tierIndex];
+    const isMixed = subject.startsWith('MIXED');
     const preferPyq = currentQ % 5 === 0;
 
     try {
-      const q = await pickNextQuestion(chatId, subject, targetDiff, preferPyq);
-      if (!q) {
+      let qRes = await pool.query(
+        'SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) AND difficulty = $3 AND id NOT IN (SELECT question_id FROM asked_history WHERE chat_id = $4) ORDER BY (is_pyq = $5) DESC, RANDOM() LIMIT 1',
+        [isMixed, '%' + subject + '%', targetDiff, chatId, preferPyq]
+      );
+      if (qRes.rows.length === 0) {
+        qRes = await pool.query('SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) AND id NOT IN (SELECT question_id FROM asked_history WHERE chat_id = $3) ORDER BY RANDOM() LIMIT 1', [isMixed, '%' + subject + '%', chatId]);
+      }
+      if (qRes.rows.length === 0) {
+        isSeedingNow = false;
+        await generateQuestionsBatch(isMixed ? undefined : subject);
+        qRes = await pool.query('SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) AND id NOT IN (SELECT question_id FROM asked_history WHERE chat_id = $3) ORDER BY RANDOM() LIMIT 1', [isMixed, '%' + subject + '%', chatId]);
+      }
+      if (qRes.rows.length === 0) {
+        await pool.query('DELETE FROM asked_history WHERE chat_id=$1', [chatId]).catch(() => {});
+        qRes = await pool.query('SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) ORDER BY RANDOM() LIMIT 1', [isMixed, '%' + subject + '%']);
+      }
+      if (qRes.rows.length === 0) {
+        qRes = await pool.query('SELECT * FROM questions ORDER BY RANDOM() LIMIT 1');
+      }
+      if (qRes.rows.length === 0) {
         await stopTestInGroup(chatId, true);
         return;
       }
 
-      if (!memDB.asked_history.has(String(chatId))) memDB.asked_history.set(String(chatId), new Set());
-      memDB.asked_history.get(String(chatId))!.add(q.id);
-      if (pgHealthy && pgPool) {
-        await pgPool.query('INSERT INTO asked_history(chat_id, question_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [chatId, q.id]).catch(() => {});
-      }
+      const q = qRes.rows[0];
+      await pool.query('INSERT INTO asked_history(chat_id, question_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [chatId, q.id]).catch(() => {});
 
       const pollDuration = getPollTimer(q.subject || subject, q.difficulty || targetDiff);
       const pyqTag = q.is_pyq ? '⭐PYQ ' : '';
@@ -1231,10 +1059,7 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
 
       const sentPoll = await sendQuizSafe(chatId, questionText, opts, finalIdx, '💡 ' + (q.explanation || 'सत्यापित उत्तर।').substring(0, 185), pollDuration);
       if (sentPoll?.poll?.id) {
-        memDB.poll_tracking.set(sentPoll.poll.id, { chat_id: chatId, correct_index: finalIdx, created_at: Date.now() });
-        if (pgHealthy && pgPool) {
-          await pgPool.query('INSERT INTO poll_tracking(poll_id, chat_id, correct_index) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [sentPoll.poll.id, chatId, finalIdx]).catch(() => {});
-        }
+        await pool.query('INSERT INTO poll_tracking(poll_id, chat_id, correct_index) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [sentPoll.poll.id, chatId, finalIdx]).catch(() => {});
       }
     } catch {}
   };
@@ -1312,60 +1137,32 @@ bot.on('poll_answer', async (ctx) => {
     const uname = (ans.user.first_name || ans.user.username || 'Student').replace(/[*_`[\]]/g, '').substring(0, 18);
     const chosen = ans.option_ids[0];
 
-    let tracked = memDB.poll_tracking.get(ans.poll_id);
-    if (!tracked && pgHealthy && pgPool) {
-      const pRes = await pgPool.query('SELECT chat_id, correct_index FROM poll_tracking WHERE poll_id=$1', [ans.poll_id]).catch(() => ({ rows: [] }));
-      if (pRes.rows[0]) tracked = { chat_id: Number(pRes.rows[0].chat_id), correct_index: Number(pRes.rows[0].correct_index), created_at: Date.now() };
-    }
-    if (!tracked) return;
-    const { chat_id, correct_index } = tracked;
+    const pRes = await pool.query('SELECT chat_id, correct_index FROM poll_tracking WHERE poll_id=$1', [ans.poll_id]);
+    if (pRes.rows.length === 0) return;
+    const { chat_id, correct_index } = pRes.rows[0];
 
     const isRight = chosen === Number(correct_index);
     const rInc = isRight ? 1 : 0;
     const wInc = isRight ? 0 : 1;
     const markDelta = isRight ? 1.00 : -0.25;
 
-    const tKey = `${chat_id}_${uid}`;
-    const tPrev = memDB.test_scores.get(tKey) || { chat_id, user_id: uid, username: uname, right_count: 0, wrong_count: 0, net_marks: 0 };
-    tPrev.username = uname;
-    tPrev.right_count += rInc;
-    tPrev.wrong_count += wInc;
-    tPrev.net_marks = Number((tPrev.net_marks + markDelta).toFixed(2));
-    memDB.test_scores.set(tKey, tPrev);
+    await pool.query(
+      'INSERT INTO test_scores (chat_id, user_id, username, right_count, wrong_count, net_marks) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (chat_id, user_id) DO UPDATE SET username = $3, right_count = test_scores.right_count + $4, wrong_count = test_scores.wrong_count + $5, net_marks = test_scores.net_marks + $6',
+      [chat_id, uid, uname, rInc, wInc, markDelta]
+    );
 
     const dayKey = getTodayKey();
-    const dKey = `${dayKey}_${chat_id}_${uid}`;
-    const dPrev = memDB.daily_scores.get(dKey) || { day_key: dayKey, chat_id, user_id: uid, username: uname, right_count: 0, wrong_count: 0, net_marks: 0 };
-    dPrev.username = uname;
-    dPrev.right_count += rInc;
-    dPrev.wrong_count += wInc;
-    dPrev.net_marks = Number((dPrev.net_marks + markDelta).toFixed(2));
-    memDB.daily_scores.set(dKey, dPrev);
+    await pool.query(
+      'INSERT INTO daily_scores (day_key, chat_id, user_id, username, right_count, wrong_count, net_marks) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (day_key, chat_id, user_id) DO UPDATE SET username = $4, right_count = daily_scores.right_count + $5, wrong_count = daily_scores.wrong_count + $6, net_marks = daily_scores.net_marks + $7',
+      [dayKey, chat_id, uid, uname, rInc, wInc, markDelta]
+    );
 
     const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
     const monthKey = ist.getUTCFullYear() + '-' + String(ist.getUTCMonth() + 1).padStart(2, '0');
-    const mKey = `${monthKey}_${uid}`;
-    const mPrev = memDB.monthly_scores.get(mKey) || { month_key: monthKey, user_id: uid, username: uname, right_count: 0, wrong_count: 0, net_marks: 0 };
-    mPrev.username = uname;
-    mPrev.right_count += rInc;
-    mPrev.wrong_count += wInc;
-    mPrev.net_marks = Number((mPrev.net_marks + markDelta).toFixed(2));
-    memDB.monthly_scores.set(mKey, mPrev);
-
-    if (pgHealthy && pgPool) {
-      await pgPool.query(
-        'INSERT INTO test_scores (chat_id, user_id, username, right_count, wrong_count, net_marks) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (chat_id, user_id) DO UPDATE SET username = $3, right_count = test_scores.right_count + $4, wrong_count = test_scores.wrong_count + $5, net_marks = test_scores.net_marks + $6',
-        [chat_id, uid, uname, rInc, wInc, markDelta]
-      ).catch(() => {});
-      await pgPool.query(
-        'INSERT INTO daily_scores (day_key, chat_id, user_id, username, right_count, wrong_count, net_marks) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (day_key, chat_id, user_id) DO UPDATE SET username = $4, right_count = daily_scores.right_count + $5, wrong_count = daily_scores.wrong_count + $6, net_marks = daily_scores.net_marks + $7',
-        [dayKey, chat_id, uid, uname, rInc, wInc, markDelta]
-      ).catch(() => {});
-      await pgPool.query(
-        'INSERT INTO monthly_scores (month_key, user_id, username, right_count, wrong_count, net_marks) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (month_key, user_id) DO UPDATE SET username = $3, right_count = monthly_scores.right_count + $4, wrong_count = monthly_scores.wrong_count + $5, net_marks = monthly_scores.net_marks + $6',
-        [monthKey, uid, uname, rInc, wInc, markDelta]
-      ).catch(() => {});
-    }
+    await pool.query(
+      'INSERT INTO monthly_scores (month_key, user_id, username, right_count, wrong_count, net_marks) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (month_key, user_id) DO UPDATE SET username = $3, right_count = monthly_scores.right_count + $4, wrong_count = monthly_scores.wrong_count + $5, net_marks = monthly_scores.net_marks + $6',
+      [monthKey, uid, uname, rInc, wInc, markDelta]
+    );
   } catch {}
 });
 
@@ -1382,11 +1179,11 @@ const getNextISTHourSubject = (): string => {
 const sendPreTestReminders = async (minsLeft: number) => {
   const nextSub = getNextISTHourSubject();
   const meta = await getTopicSummaryMeta(nextSub);
-  const chs = await fetchChannelsList(true);
-  const usersList = Array.from(memDB.users.values()).filter(u => u.alerts_enabled && !u.is_banned);
-  const mentionList = usersList.slice(0, 20).map(u => '[' + (u.first_name || 'Student').replace(/[*_`[\]]/g, '') + '](tg://user?id=' + u.telegram_id + ')').join(', ');
+  const chs = await pool.query("SELECT * FROM channels WHERE is_active=TRUE AND approval_status='APPROVED'").catch(() => ({ rows: [] }));
+  const users = await pool.query('SELECT telegram_id, first_name FROM users WHERE alerts_enabled=TRUE AND is_banned=FALSE AND ($1 = ANY(preferred_subjects) OR $2 = TRUE)', [nextSub, nextSub.startsWith('MIXED')]).catch(() => ({ rows: [] }));
+  const mentionList = users.rows.slice(0, 20).map(u => '[' + (u.first_name || 'Student').replace(/[*_`[\]]/g, '') + '](tg://user?id=' + u.telegram_id + ')').join(', ');
 
-  for (const ch of chs) {
+  for (const ch of chs.rows) {
     if (!isGroupAllowedToPost(ch).ok) continue;
     const cid = Number(ch.chat_id);
     if (minsLeft === 1) {
@@ -1417,6 +1214,12 @@ const sendPreTestReminders = async (minsLeft: number) => {
     }
     await sleep(300);
   }
+  if (minsLeft === 10) {
+    for (const u of users.rows) {
+      await safeSend(u.telegram_id, '🔔 *Alert:* *' + nextSub + '* (' + meta.currentTopic + ') का लाइव टेस्ट *10 मिनट* में शुरू हो रहा है!');
+      await sleep(150);
+    }
+  }
 };
 
 cron.schedule('50 7-21 * * *', () => sendPreTestReminders(10), { timezone: 'Asia/Kolkata' });
@@ -1426,8 +1229,8 @@ cron.schedule('59 7-21 * * *', () => sendPreTestReminders(1), { timezone: 'Asia/
 cron.schedule('0 8-22 * * *', async () => {
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
   const sub = getSubjectForHour(ist.getUTCHours());
-  const chs = await fetchChannelsList(true);
-  for (const c of chs) {
+  const chs = await pool.query("SELECT chat_id FROM channels WHERE is_active=TRUE AND approval_status='APPROVED'").catch(() => ({ rows: [] }));
+  for (const c of chs.rows) {
     startHourlySubjectTest(Number(c.chat_id), sub, 0, false);
     await sleep(350);
   }
@@ -1435,14 +1238,30 @@ cron.schedule('0 8-22 * * *', async () => {
 
 cron.schedule('0 23 * * *', () => announceDailyClosingReport(), { timezone: 'Asia/Kolkata' });
 
+cron.schedule('0 14 */2 * *', async () => {
+  const promo = await getCfg('promo_msg');
+  const botUser = bot.botInfo?.username || '';
+  const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
+  const kb: any[][] = [
+    [Markup.button.url('➕ Add to Group (1-Click)', 'https://t.me/' + botUser + '?startgroup=true&admin=' + adminPerms)],
+    [Markup.button.url('📢 Add to Channel (1-Click)', 'https://t.me/' + botUser + '?startchannel=true&admin=' + adminPerms)]
+  ];
+  const chs = await pool.query('SELECT chat_id FROM channels WHERE is_active=TRUE').catch(() => ({ rows: [] }));
+  for (const c of chs.rows) { await safeSend(c.chat_id, promo, Markup.inlineKeyboard(kb)); await sleep(350); }
+}, { timezone: 'Asia/Kolkata' });
+
+cron.schedule('0 2 * * *', async () => {
+  await pool.query("DELETE FROM poll_tracking WHERE created_at < NOW() - INTERVAL '1 day'").catch(() => {});
+}, { timezone: 'Asia/Kolkata' });
+
 const autoResumeOnServerBoot = async () => {
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
   const hr = ist.getUTCHours();
   const min = ist.getUTCMinutes();
   if (hr >= 8 && hr <= 22 && min >= 1 && min <= 48) {
     const sub = getSubjectForHour(hr);
-    const chs = await fetchChannelsList(true);
-    for (const c of chs) {
+    const chs = await pool.query("SELECT chat_id FROM channels WHERE is_active=TRUE AND approval_status='APPROVED'").catch(() => ({ rows: [] }));
+    for (const c of chs.rows) {
       const cid = Number(c.chat_id);
       if (!activeTests.has(cid)) { startHourlySubjectTest(cid, sub, min, true); await sleep(350); }
     }
@@ -1457,7 +1276,7 @@ const renderMainMenu = async (ctx: any) => {
   const giftTag = await getCfg('gift_tagline');
   const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
   const text =
-    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V6.5)*\n' +
+    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V6.7)*\n' +
     '• ⏰ *Live Time:* 8:00 AM – 11:00 PM (15 Hours Daily)\n' +
     '• 📚 *Syllabus:* Topic-Wise Complete Exam Coverage + PYQs\n' +
     '• ⚖️ *Marking:* +1.00 Right | -0.25 Wrong (1/4 Negative)\n' +
@@ -1521,7 +1340,10 @@ bot.start(async (ctx) => {
     const parsed = Number(payload.replace('ref_', ''));
     if (!isNaN(parsed) && parsed !== uid) refBy = parsed;
   }
-  await registerUserInDB(uid, ctx.from.username || 'student', ctx.from.first_name || 'Student', refBy);
+  await pool.query(
+    'INSERT INTO users(telegram_id, username, first_name, referred_by, ref_credited) VALUES($1,$2,$3,$4,FALSE) ON CONFLICT(telegram_id) DO UPDATE SET username=$2, first_name=$3',
+    [uid, ctx.from.username || 'student', ctx.from.first_name || 'Student', refBy]
+  ).catch(() => {});
 
   const fsub = await checkTwoFSub(uid);
   if (!fsub.ok) {
@@ -1546,7 +1368,8 @@ bot.action('u_home', (ctx) => renderMainMenu(ctx));
 const renderReferPanel = async (ctx: any) => {
   const uid = ctx.from.id;
   const botUser = ctx.botInfo?.username || '';
-  const u = memDB.users.get(uid) || { wallet_balance: 0, referral_count: 0, last_cleared_at: null };
+  const r = await pool.query('SELECT wallet_balance, referral_count, last_cleared_at FROM users WHERE telegram_id=$1', [uid]).catch(() => ({ rows: [] }));
+  const u = r.rows[0] || { wallet_balance: 0, referral_count: 0, last_cleared_at: null };
   const refLink = 'https://t.me/' + botUser + '?start=ref_' + uid;
 
   const msg =
@@ -1570,7 +1393,8 @@ bot.action('u_refer', (ctx) => renderReferPanel(ctx));
 
 bot.action('u_withdraw', async (ctx) => {
   const uid = ctx.from.id;
-  const bal = Number(memDB.users.get(uid)?.wallet_balance || 0);
+  const r = await pool.query('SELECT wallet_balance FROM users WHERE telegram_id=$1', [uid]).catch(() => ({ rows: [] }));
+  const bal = Number(r.rows[0]?.wallet_balance || 0);
   if (bal < 99) return ctx.answerCbQuery('❌ न्यूनतम निकासी ₹99 है! अभी आपका बैलेंस ₹' + bal + ' है।', { show_alert: true });
   userStates.set(uid, { action: 'SUBMIT_UPI' });
   await ctx.answerCbQuery();
@@ -1599,14 +1423,10 @@ bot.command('schedule', (ctx) => renderScheduleView(ctx));
 const renderMonthlyTopperList = async (ctx: any) => {
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
   const monthKey = ist.getUTCFullYear() + '-' + String(ist.getUTCMonth() + 1).padStart(2, '0');
-  const rows = Array.from(memDB.monthly_scores.values())
-    .filter(r => r.month_key === monthKey)
-    .sort((a, b) => Number(b.net_marks) - Number(a.net_marks))
-    .slice(0, 10);
-
+  const top = await pool.query('SELECT user_id, username, right_count, wrong_count, net_marks FROM monthly_scores WHERE month_key=$1 ORDER BY net_marks DESC LIMIT 10', [monthKey]).catch(() => ({ rows: [] }));
   let msg = '🏆 *MONTHLY TOP 10 (' + monthKey + ')* 🏆\n🎁 *1 Nov ₹100 Gift Card Leaderboard:*\n━━━━━━━━━━━━━━━━━━━━━\n\n';
-  if (rows.length === 0) msg += 'अभी स्कोरबोर्ड खाली है।\n';
-  else rows.forEach((r, i) => { msg += (i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖' + (i + 1) + '.') + ' [' + r.username + '](tg://user?id=' + r.user_id + ') ➔ *' + Number(r.net_marks).toFixed(2) + ' Pts* (✅' + r.right_count + ' ❌' + r.wrong_count + ')\n'; });
+  if (top.rows.length === 0) msg += 'अभी स्कोरबोर्ड खाली है।\n';
+  else top.rows.forEach((r, i) => { msg += (i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '🎖' + (i + 1) + '.') + ' [' + r.username + '](tg://user?id=' + r.user_id + ') ➔ *' + Number(r.net_marks).toFixed(2) + ' Pts* (✅' + r.right_count + ' ❌' + r.wrong_count + ')\n'; });
   const kb = Markup.inlineKeyboard([[Markup.button.callback('🔙 Main Menu', 'u_home')]]);
   if (ctx.callbackQuery) return safeEdit(ctx, msg, kb);
   return safeSend(ctx.chat.id, msg, kb);
@@ -1616,7 +1436,8 @@ bot.action('u_monthly', (ctx) => renderMonthlyTopperList(ctx));
 bot.command('monthlytop', (ctx) => renderMonthlyTopperList(ctx));
 
 const renderPrefs = async (ctx: any) => {
-  const u = memDB.users.get(ctx.from.id) || { target_exam: EXAMS[0], preferred_subjects: ['HISTORY', 'POLITY'], alerts_enabled: true };
+  const r = await pool.query('SELECT target_exam, preferred_subjects, alerts_enabled FROM users WHERE telegram_id=$1', [ctx.from.id]).catch(() => ({ rows: [] }));
+  const u = r.rows[0] || { target_exam: EXAMS[0], preferred_subjects: [], alerts_enabled: true };
   const subs: string[] = u.preferred_subjects || [];
   const kb: any[][] = [
     EXAMS.slice(0, 2).map(e => Markup.button.callback((u.target_exam === e ? '✅ ' : '') + e, 'setex_' + e)),
@@ -1634,25 +1455,16 @@ const renderPrefs = async (ctx: any) => {
 };
 
 bot.action('u_prefs', (ctx) => renderPrefs(ctx));
-bot.action(/^setex_(.+)$/, async (ctx) => {
-  const u = memDB.users.get(ctx.from.id);
-  if (u) u.target_exam = ctx.match[1];
-  return renderPrefs(ctx);
-});
+bot.action(/^setex_(.+)$/, async (ctx) => { await pool.query('UPDATE users SET target_exam=$1 WHERE telegram_id=$2', [ctx.match[1], ctx.from.id]); return renderPrefs(ctx); });
 bot.action(/^setsub_(.+)$/, async (ctx) => {
   const s = ctx.match[1];
-  const u = memDB.users.get(ctx.from.id);
-  if (u) {
-    const arr: string[] = u.preferred_subjects || [];
-    u.preferred_subjects = arr.includes(s) ? arr.filter(x => x !== s) : [...arr, s];
-  }
+  const r = await pool.query('SELECT preferred_subjects FROM users WHERE telegram_id=$1', [ctx.from.id]);
+  let arr: string[] = r.rows[0]?.preferred_subjects || [];
+  arr = arr.includes(s) ? arr.filter(x => x !== s) : [...arr, s];
+  await pool.query('UPDATE users SET preferred_subjects=$1 WHERE telegram_id=$2', [arr, ctx.from.id]);
   return renderPrefs(ctx);
 });
-bot.action('tog_alert', async (ctx) => {
-  const u = memDB.users.get(ctx.from.id);
-  if (u) u.alerts_enabled = !u.alerts_enabled;
-  return renderPrefs(ctx);
-});
+bot.action('tog_alert', async (ctx) => { await pool.query('UPDATE users SET alerts_enabled = NOT alerts_enabled WHERE telegram_id=$1', [ctx.from.id]); return renderPrefs(ctx); });
 
 bot.on('my_chat_member', async (ctx) => {
   try {
@@ -1662,7 +1474,7 @@ bot.on('my_chat_member', async (ctx) => {
     if (['group', 'supergroup', 'channel'].includes(chat.type) && ['administrator', 'member'].includes(st)) {
       const chatTitle = chat.title || 'Educational Chat';
       const approved = isMaster(adder.id) ? 'APPROVED' : 'PENDING';
-      await registerChannelInDB(chat.id, chatTitle, chat.type, adder.id, approved);
+      await pool.query('INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,$2,$3,$4,TRUE,$5) ON CONFLICT(chat_id) DO UPDATE SET title=$2, chat_type=$3, is_active=TRUE', [chat.id, chatTitle, chat.type, adder.id, approved]);
       await safeSend(
         chat.id,
         '🎓 *Professor AI Quiz Bot अब "' + chatTitle + '" से जुड़ चुका है!*\n' +
@@ -1672,15 +1484,49 @@ bot.on('my_chat_member', async (ctx) => {
           [Markup.button.callback('🛑 Stop Quiz', 'pause_test_' + chat.id)]
         ])
       );
+      if (ADMIN_ID && !isMaster(adder.id)) {
+        await safeSend(
+          ADMIN_ID,
+          '🔔 *New Group/Channel Added!*\n📌 *' + chatTitle + '* (' + chat.id + ')\n👤 By: ' + (adder.first_name || 'User') + ' (' + adder.id + ')',
+          Markup.inlineKeyboard([
+            [Markup.button.callback('✅ Approve 30d', 'adm_app_' + chat.id), Markup.button.callback('⭐ Grant 1 Yr', 'adm_yr_' + chat.id), Markup.button.callback('🚫 Block', 'adm_rej_' + chat.id)]
+          ])
+        );
+      }
     }
   } catch {}
+});
+
+bot.action(/^adm_app_(-?\d+)$/, async (ctx) => {
+  if (!isMaster(ctx.from.id)) return;
+  const cid = Number(ctx.match[1]);
+  await pool.query("UPDATE channels SET approval_status='APPROVED', trial_ends_at = NOW() + INTERVAL '30 days', is_active=TRUE WHERE chat_id=$1", [cid]);
+  await ctx.answerCbQuery('Approved 30d Trial!', { show_alert: true });
+  await safeSend(cid, '🎉 *मास्टर एडमिन ने आपके ग्रुप/चैनल का 30 दिनों का फ्री ट्रायल अप्रूव कर दिया है!*');
+});
+
+bot.action(/^adm_yr_(-?\d+)$/, async (ctx) => {
+  if (!isMaster(ctx.from.id)) return;
+  const cid = Number(ctx.match[1]);
+  await pool.query("UPDATE channels SET approval_status='APPROVED', sub_ends_at = NOW() + INTERVAL '365 days', is_active=TRUE WHERE chat_id=$1", [cid]);
+  await ctx.answerCbQuery('Granted 1 Year!', { show_alert: true });
+  await safeSend(cid, '🎉 *मास्टर एडमिन ने आपके ग्रुप/चैनल को 1 साल के लिए एक्टिवेट कर दिया है!*');
+});
+
+bot.action(/^adm_rej_(-?\d+)$/, async (ctx) => {
+  if (!isMaster(ctx.from.id)) return;
+  const cid = Number(ctx.match[1]);
+  await stopTestInGroup(cid, false);
+  await pool.query("UPDATE channels SET approval_status='REJECTED', is_active=FALSE WHERE chat_id=$1", [cid]);
+  await ctx.answerCbQuery('Blocked!', { show_alert: true });
 });
 
 bot.command('setupgroup', async (ctx) => {
   if (ctx.chat.type === 'private') return ctx.reply('यह कमांड अपने ग्रुप या चैनल के अंदर लिखें।');
   const gChat: any = ctx.chat;
   const gTitle = gChat.title || 'Group';
-  await registerChannelInDB(ctx.chat.id, gTitle, ctx.chat.type, ctx.from.id, 'APPROVED');
+  const approved = isMaster(ctx.from.id) ? 'APPROVED' : 'PENDING';
+  await pool.query('INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,$2,$3,$4,TRUE,$5) ON CONFLICT(chat_id) DO UPDATE SET title=$2, owner_id=$4, is_active=TRUE', [ctx.chat.id, gTitle, ctx.chat.type, ctx.from.id, approved]);
   return safeSend(
     ctx.chat.id,
     '✅ *"' + gTitle + '" रजिस्टर हो गया है!*',
@@ -1692,26 +1538,29 @@ bot.command('setupgroup', async (ctx) => {
 });
 
 bot.action('u_groups', async (ctx) => {
-  const rows = await fetchChannelsList(false);
-  if (rows.length === 0) {
+  const r = isMaster(ctx.from.id)
+    ? await pool.query('SELECT * FROM channels ORDER BY title LIMIT 30').catch(() => ({ rows: [] }))
+    : await pool.query('SELECT * FROM channels WHERE owner_id=$1', [ctx.from.id]).catch(() => ({ rows: [] }));
+  if (r.rows.length === 0) {
     return safeEdit(
       ctx,
-      '📢 *कोई ग्रुप/चैनल अभी रजिस्टर नहीं दिखा।*\nनीचे *"➕ Link Group/Channel"* बटन दबाकर अपने ग्रुप से कोई मैसेज Forward करें या ग्रुप में `/setupgroup` लिखें:',
+      '📢 कोई ग्रुप/चैनल अभी रजिस्टर नहीं है। नीचे बटन दबाकर अपने ग्रुप का `@username` भेजें या मैसेज Forward करें:',
       Markup.inlineKeyboard([
         [Markup.button.callback('➕ Link Group / Channel', 'adm_add_grp')],
         [Markup.button.callback('🔙 Back', 'u_home')]
       ])
     );
   }
-  const kb: any[][] = rows.map(g => [Markup.button.callback((g.is_active ? '🟢 ' : '🔴 ') + g.title + ' [' + g.approval_status + ']', 'gpanel_' + g.chat_id)]);
+  const kb: any[][] = r.rows.map(g => [Markup.button.callback((g.is_active ? '🟢 ' : '🔴 ') + g.title + ' [' + g.approval_status + ']', 'gpanel_' + g.chat_id)]);
   kb.push([Markup.button.callback('➕ Link Another Group/Channel', 'adm_add_grp')]);
   kb.push([Markup.button.callback('🔙 Back', 'u_home')]);
   return safeEdit(ctx, '⚙️ *ग्रुप / चैनल चुनें:*', Markup.inlineKeyboard(kb));
 });
 
 const renderGroupPanel = async (ctx: any, chatId: number) => {
-  const g = await fetchSingleChannel(chatId);
-  if (!g) return;
+  const r = await pool.query('SELECT * FROM channels WHERE chat_id=$1', [chatId]).catch(() => ({ rows: [] }));
+  if (r.rows.length === 0) return;
+  const g = r.rows[0];
   const perm = isGroupAllowedToPost(g);
 
   const txt =
@@ -1725,18 +1574,15 @@ const renderGroupPanel = async (ctx: any, chatId: number) => {
     [Markup.button.callback(g.is_active ? '🔕 Schedule OFF' : '🔔 Schedule ON', 'gtog_' + chatId), Markup.button.callback('✍️ Custom Header', 'gcap_' + chatId)],
     [Markup.button.callback('⭐ Pay 100 Stars (1 Year Auto)', 'gpay_' + chatId)]
   ];
+  if (isMaster(ctx.from.id)) {
+    kb.push([Markup.button.callback('✅ Approve 30d', 'adm_app_' + chatId), Markup.button.callback('⭐ Grant 1 Yr', 'adm_yr_' + chatId), Markup.button.callback('🚫 Block', 'adm_rej_' + chatId)]);
+  }
   kb.push([Markup.button.callback('🔙 Back', 'u_groups')]);
   return safeEdit(ctx, txt, Markup.inlineKeyboard(kb));
 };
 
 bot.action(/^gpanel_(-?\d+)$/, (ctx) => renderGroupPanel(ctx, Number(ctx.match[1])));
-bot.action(/^gtog_(-?\d+)$/, async (ctx) => {
-  const cid = Number(ctx.match[1]);
-  const g = memDB.channels.get(cid);
-  if (g) g.is_active = !g.is_active;
-  if (pgHealthy && pgPool) await pgPool.query('UPDATE channels SET is_active = NOT is_active WHERE chat_id=$1', [cid]).catch(() => {});
-  return renderGroupPanel(ctx, cid);
-});
+bot.action(/^gtog_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await pool.query('UPDATE channels SET is_active = NOT is_active WHERE chat_id=$1', [cid]); return renderGroupPanel(ctx, cid); });
 bot.action(/^gcap_(-?\d+)$/, async (ctx) => {
   const cid = Number(ctx.match[1]);
   userStates.set(ctx.from.id, { action: 'SET_GRP_CAP', targetId: cid });
@@ -1760,28 +1606,24 @@ bot.action(/^gstart_(-?\d+)$/, async (ctx) => {
 bot.action(/^pause_test_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await stopTestInGroup(cid, true); await ctx.answerCbQuery('Test Paused!'); });
 
 // =========================================================
-// MASTER ADMIN PANEL (OWNER ONLY)
+// MASTER ADMIN PANEL (LIVE POSTGRESQL COUNTS & RECONNECT)
 // =========================================================
 const renderAdmin = async (ctx: any) => {
   if (!isMaster(ctx.from?.id)) return ctx.reply('🔒 केवल बॉट मालिक के लिए। (ID: ' + ctx.from?.id + ')');
 
-  let uCnt = memDB.users.size;
-  let gCnt = Array.from(memDB.channels.values()).filter(c => c.is_active).length;
-  let qCnt = memDB.questions.length;
-
-  if (pgHealthy && pgPool) {
-    try {
-      const [uR, gR, qR] = await Promise.all([
-        pgPool.query('SELECT COUNT(*) FROM users'),
-        pgPool.query('SELECT COUNT(*) FROM channels WHERE is_active=TRUE'),
-        pgPool.query('SELECT COUNT(*) FROM questions')
-      ]);
-      uCnt = Math.max(uCnt, Number(uR.rows[0]?.count || 0));
-      gCnt = Math.max(gCnt, Number(gR.rows[0]?.count || 0));
-      qCnt = Math.max(qCnt, Number(qR.rows[0]?.count || 0));
-    } catch {
-      pgHealthy = false;
-    }
+  let uCnt = 0, gCnt = 0, qCnt = 0;
+  try {
+    const [uRes, gRes, qRes] = await Promise.all([
+      pool.query('SELECT COUNT(*) FROM users'),
+      pool.query('SELECT COUNT(*) FROM channels WHERE is_active=TRUE'),
+      pool.query('SELECT COUNT(*) FROM questions')
+    ]);
+    uCnt = Number(uRes.rows[0]?.count || 0);
+    gCnt = Number(gRes.rows[0]?.count || 0);
+    qCnt = Number(qRes.rows[0]?.count || 0);
+    dbStatusText = '🟢 PostgreSQL Connected & Active';
+  } catch (e: any) {
+    dbStatusText = '🔴 DB Error: ' + String(e?.message || '').substring(0, 40);
   }
 
   const fsubOn = await getCfg('fsub_enabled');
@@ -1789,24 +1631,24 @@ const renderAdmin = async (ctx: any) => {
   const facOn = await getCfg('factory_on');
 
   const txt =
-    '👑 *PROFESSOR MASTER ADMIN PANEL (V6.5)* 👑\n' +
-    '• 👥 Users: *' + uCnt + '* | 📢 Active Groups: *' + gCnt + '*\n' +
-    '• 📚 Verified Question Bank: *' + qCnt + '*\n' +
-    '• 📡 Seeder Status: ' + lastSeedReport + '\n' +
-    '• 👥 3-User Ready Lobby: *' + (minCheckOn ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
-    '• 🔐 2-Channel Force Sub: *' + (fsubOn === 'true' ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
-    '• ⚡ Auto-Seeder: *Every 60s (Groq + Gemini) 🟢*';
+    '👑 *PROFESSOR MASTER ADMIN PANEL (V6.7)* 👑\n' +
+    '• 🗄 *Database:* ' + dbStatusText + '\n' +
+    '• 👥 *Users:* *' + uCnt + '* | 📢 *Active Groups:* *' + gCnt + '*\n' +
+    '• 📚 *PostgreSQL Question Bank:* *' + qCnt + '*\n' +
+    '• 📡 *Seeder Status:* ' + lastSeedReport + '\n' +
+    '• 👥 *3-User Ready Lobby:* *' + (minCheckOn ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
+    '• 🔐 *2-Channel Force Sub:* *' + (fsubOn === 'true' ? 'ON 🟢' : 'OFF 🔴') + '*';
 
   const kb: any[][] = [
-    [Markup.button.callback(minCheckOn ? '🔴 3-User Lobby: OFF' : '🟢 3-User Lobby: ON', 'adm_tog_min'), Markup.button.callback('⚡ Seed +15 Qs', 'adm_gen10'), Markup.button.callback('🚀 Turbo +45 Qs', 'adm_gen45')],
-    [Markup.button.callback('➕ Link Group / Channel', 'adm_add_grp'), Markup.button.callback('⚙️ Manage Groups (' + gCnt + ')', 'u_groups')],
+    [Markup.button.callback('🔄 Check / Reconnect DB', 'adm_chk_db'), Markup.button.callback('⚡ Seed +15 Qs', 'adm_gen10'), Markup.button.callback('🚀 Turbo +45 Qs', 'adm_gen45')],
+    [Markup.button.callback(minCheckOn ? '🔴 3-User Lobby: OFF' : '🟢 3-User Lobby: ON', 'adm_tog_min'), Markup.button.callback('➕ Link Group/Channel', 'adm_add_grp')],
     [Markup.button.callback('📌 Pin Custom Message in Groups', 'adm_bcpin'), Markup.button.callback('📢 Normal Broadcast', 'adm_bc')],
     [Markup.button.callback('🌙 Post Daily Close Report Now', 'adm_daily_rep'), Markup.button.callback('📄 Generate Free A4 PDF', 'u_pdf_menu')],
     [Markup.button.callback('🎁 Edit ₹100 Gift Tagline', 'adm_gift'), Markup.button.callback('💌 Message Winner', 'adm_msg_win')],
     [Markup.button.callback('🔐 Set FSub 1', 'adm_fsub1'), Markup.button.callback('💬 Set FSub 2', 'adm_fsub2')],
     [Markup.button.callback(fsubOn === 'true' ? '🔴 FSub OFF' : '🟢 FSub ON', 'adm_tog_fsub'), Markup.button.callback(facOn === 'true' ? '⏸ Pause Seeder' : '▶️ Resume Seeder', 'adm_tog_fac')],
     [Markup.button.callback('🚀 Instant Start All Groups', 'adm_start_all'), Markup.button.callback('🛑 Stop All Tests', 'adm_stop_all')],
-    [Markup.button.callback('🔙 User Menu', 'u_home')]
+    [Markup.button.callback('⚙️ Manage Groups (' + gCnt + ')', 'u_groups'), Markup.button.callback('🔙 User Menu', 'u_home')]
   ];
   if (ctx.callbackQuery) return safeEdit(ctx, txt, Markup.inlineKeyboard(kb));
   return safeSend(ctx.chat.id, txt, Markup.inlineKeyboard(kb));
@@ -1815,13 +1657,21 @@ const renderAdmin = async (ctx: any) => {
 bot.command('admin', (ctx) => renderAdmin(ctx));
 bot.action('adm_home', (ctx) => renderAdmin(ctx));
 
+bot.action('adm_chk_db', async (ctx) => {
+  if (!isMaster(ctx.from.id)) return;
+  await ctx.answerCbQuery('Verifying PostgreSQL Connection & Tables...');
+  const ok = await initDB();
+  await safeSend(ctx.chat.id, ok ? '✅ *PostgreSQL डेटाबेस 100% कनेक्टेड और चालू है!*' : '❌ *डेटाबेस अभी भी पहुंच से बाहर है:* ' + dbStatusText);
+  return renderAdmin(ctx);
+});
+
 bot.action('adm_add_grp', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
   userStates.set(ctx.from.id, { action: 'ADD_GRP' });
   await ctx.answerCbQuery();
   return safeSend(
     ctx.chat.id,
-    '📢 *ग्रुप या चैनल लिंक करने के लिए:*\nअपने ग्रुप/चैनल से कोई भी एक मैसेज यहां **Forward** करें या उसका `@username` लिखकर भेजें (/cancel रद्द करने के लिए):'
+    '📢 *ग्रुप या चैनल को PostgreSQL में जोड़ने के लिए:*\nउसका `@username` (जैसे `@quizz_group_channel`) भेजें या वहां से कोई मैसेज यहां Forward करें:'
   );
 });
 
@@ -1844,24 +1694,24 @@ bot.action('adm_tog_fac', async (ctx) => { if (!isMaster(ctx.from.id)) return; c
 
 bot.action('adm_gen10', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Seeding 15 Verified Questions...');
+  await ctx.answerCbQuery('Seeding 15 Verified Questions into PostgreSQL...');
   isSeedingNow = false;
   const r = await generateQuestionsBatch();
-  await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए प्रश्न जुड़ गए!' : '❌ विफल: ' + r.error);
+  await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए प्रश्न डेटाबेस में जुड़ गए!' : '❌ विफल: ' + r.error);
   return renderAdmin(ctx);
 });
 
 bot.action('adm_gen45', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Turbo Seeding 45 Questions...');
-  await safeSend(ctx.chat.id, '🚀 *Turbo Seeder चालू:* 3 अलग-अलग विषयों के +45 सवाल जोड़े जा रहे हैं...');
+  await ctx.answerCbQuery('Turbo Seeding +45 Questions...');
+  await safeSend(ctx.chat.id, '🚀 *Turbo Seeder चालू:* 3 अलग-अलग विषयों के +45 सवाल PostgreSQL में जोड़े जा रहे हैं...');
   (async () => {
     let totalAdded = 0;
     for (let i = 0; i < 3; i++) {
       isSeedingNow = false;
       const r = await generateQuestionsBatch();
       if (r.ok) totalAdded += r.count;
-      await sleep(1200);
+      await sleep(1000);
     }
     await safeSend(ctx.chat.id, '🎉 *Turbo Seed Complete:* डेटाबेस में कुल *+' + totalAdded + '* नए प्रश्न जुड़ गए!');
   })();
@@ -1872,18 +1722,29 @@ bot.action('adm_start_all', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
   const sub = getSubjectForHour(ist.getUTCHours());
-  const chs = await fetchChannelsList(true);
-  if (chs.length === 0) {
-    return ctx.answerCbQuery('⚠️ कोई एक्टिव ग्रुप नहीं मिला! पहले "➕ Link Group/Channel" से ग्रुप जोड़ें या ग्रुप में /setupgroup लिखें।', { show_alert: true });
+  const chs = await pool.query("SELECT chat_id FROM channels WHERE is_active=TRUE AND approval_status='APPROVED'").catch(() => ({ rows: [] }));
+  if (chs.rows.length === 0) {
+    return ctx.answerCbQuery('⚠️ कोई ग्रुप लिंक नहीं है! पहले "➕ Link Group/Channel" दबाकर ग्रुप जोड़ें।', { show_alert: true });
   }
-  for (const c of chs) { startHourlySubjectTest(Number(c.chat_id), sub, 0, true); await sleep(350); }
-  await ctx.answerCbQuery('Instant Started ' + sub + ' in ' + chs.length + ' groups!', { show_alert: true });
+  for (const c of chs.rows) { startHourlySubjectTest(Number(c.chat_id), sub, 0, true); await sleep(350); }
+  await ctx.answerCbQuery('🚀 Instant Started ' + sub + ' in ' + chs.rows.length + ' groups!', { show_alert: true });
 });
 
 bot.action('adm_stop_all', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
   for (const cid of Array.from(activeTests.keys())) await stopTestInGroup(cid, true);
   await ctx.answerCbQuery('All tests paused!', { show_alert: true });
+});
+
+bot.action(/^pay_ok_(\d+)$/, async (ctx) => {
+  if (!isMaster(ctx.from.id)) return;
+  const targetUid = Number(ctx.match[1]);
+  const clearDate = new Date(Date.now() + 5.5 * 3600 * 1000).toLocaleDateString('hi-IN');
+  await pool.query('UPDATE users SET wallet_balance = 0, referral_count = 0, last_cleared_at = $1 WHERE telegram_id = $2', [clearDate, targetUid]);
+  await pool.query('UPDATE users SET referred_by = NULL WHERE referred_by = $1', [targetUid]).catch(() => {});
+  await ctx.answerCbQuery('Marked Paid & Reset!', { show_alert: true });
+  await safeSend(targetUid, '✅ *भुगतान सफल एवं रेफ़रल काउंटर रीसेट!*');
+  await safeEdit(ctx, '✅ *User ' + targetUid + ' का पेमेंट क्लियर और काउंटर रीसेट कर दिया गया (' + clearDate + ')!*');
 });
 
 const promptAdminInput = async (ctx: any, action: string, promptText: string) => {
@@ -1893,7 +1754,7 @@ const promptAdminInput = async (ctx: any, action: string, promptText: string) =>
 };
 
 bot.action('adm_bc', (ctx) => promptAdminInput(ctx, 'BC_NORM', '📢 *Broadcast मैसेज भेजें:*'));
-bot.action('adm_bcpin', (ctx) => promptAdminInput(ctx, 'BC_PIN', '📌 *Pin & Broadcast मैसेज भेजें (सभी ग्रुप्स में पिन होगा):*'));
+bot.action('adm_bcpin', (ctx) => promptAdminInput(ctx, 'BC_PIN', '📌 *Pin & Broadcast मैसेज भेजें (सभी ग्रुप्स में पिन होगा और यूज़र्स को दिखेगा):*'));
 bot.action('adm_gift', (ctx) => promptAdminInput(ctx, 'SET_GIFT', '🎁 *Gift Tagline लिखें:*'));
 bot.action('adm_fsub1', (ctx) => promptAdminInput(ctx, 'SET_FSUB1', '🔐 *FSub 1:* पोस्ट Forward करें या @username लिखें:'));
 bot.action('adm_fsub2', (ctx) => promptAdminInput(ctx, 'SET_FSUB2', '💬 *FSub 2:* पोस्ट Forward करें या @username लिखें:'));
@@ -1916,15 +1777,35 @@ bot.on('message', async (ctx) => {
         Markup.inlineKeyboard([[Markup.button.callback('📝 Send Editable Text (.txt) to User', 'adm_sendtxt_' + ctx.from.id + '_' + sub)]])
       );
     }
-    return safeSend(ctx.chat.id, '✅ *आपकी शिकायत मास्टर एडमिन को भेज दी गई है!*');
+    return safeSend(ctx.chat.id, '✅ *आपकी शिकायत मास्टर एडमिन को भेज दी गई है!* जल्द ही समाधान किया जाएगा।');
+  }
+
+  if (st.action === 'SUBMIT_UPI' && 'text' in ctx.message) {
+    userStates.delete(ctx.from.id);
+    const upiDetails = ctx.message.text.trim();
+    const uid = ctx.from.id;
+    const r = await pool.query('SELECT wallet_balance, referral_count, first_name FROM users WHERE telegram_id=$1', [uid]);
+    const u = r.rows[0];
+    const bal = Number(u?.wallet_balance || 0);
+    if (bal < 99) return safeSend(ctx.chat.id, '❌ बैलेंस ₹99 से कम है।');
+
+    const clearDate = new Date(Date.now() + 5.5 * 3600 * 1000).toLocaleDateString('hi-IN');
+    await pool.query('UPDATE users SET wallet_balance = 0, referral_count = 0, last_cleared_at = $1 WHERE telegram_id = $2', [clearDate, uid]);
+    await pool.query('UPDATE users SET referred_by = NULL WHERE referred_by = $1', [uid]).catch(() => {});
+
+    if (ADMIN_ID) {
+      await safeSend(
+        ADMIN_ID,
+        '💸 *WITHDRAWAL REQUEST (₹' + bal + ')*\n👤 ' + (u.first_name || 'User') + ' (' + uid + ')\n🏦 UPI: *' + upiDetails + '*',
+        Markup.inlineKeyboard([[Markup.button.callback('✅ Confirm Paid', 'pay_ok_' + uid)]])
+      );
+    }
+    return safeSend(ctx.chat.id, '✅ आपकी रिक्वेस्ट एडमिन को भेज दी गई है और आपका रेफ़रल मीटर 0 से रीसेट हो गया है!');
   }
 
   if (st.action === 'SET_GRP_CAP' && st.targetId && 'text' in ctx.message) {
     userStates.delete(ctx.from.id);
-    const cap = ctx.message.text.trim().substring(0, 120);
-    const g = memDB.channels.get(st.targetId);
-    if (g) g.custom_caption = cap;
-    if (pgHealthy && pgPool) await pgPool.query('UPDATE channels SET custom_caption=$1 WHERE chat_id=$2', [cap, st.targetId]).catch(() => {});
+    await pool.query('UPDATE channels SET custom_caption=$1 WHERE chat_id=$2', [ctx.message.text.trim().substring(0, 120), st.targetId]);
     await safeSend(ctx.chat.id, '✅ कस्टम कैप्शन सेव हो गया!');
     return renderGroupPanel(ctx, st.targetId);
   }
@@ -1939,8 +1820,11 @@ bot.on('message', async (ctx) => {
       if (msgAny.forward_from_chat) targetId = msgAny.forward_from_chat.id;
       else if ('text' in ctx.message) targetId = ctx.message.text.trim();
       const chatInfo: any = await bot.telegram.getChat(targetId);
-      await registerChannelInDB(Number(chatInfo.id), chatInfo.title || 'Quiz Group', chatInfo.type || 'supergroup', ctx.from.id, 'APPROVED');
-      await safeSend(ctx.chat.id, '✅ *"' + (chatInfo.title || chatInfo.id) + '" सफलतापूर्वक जुड़ गया है!* अब आप Instant Start कर सकते हैं।');
+      await pool.query(
+        "INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,$2,$3,$4,TRUE,'APPROVED') ON CONFLICT(chat_id) DO UPDATE SET title=$2, is_active=TRUE, approval_status='APPROVED'",
+        [chatInfo.id, chatInfo.title || 'Quiz Group', chatInfo.type || 'supergroup', ctx.from.id]
+      );
+      await safeSend(ctx.chat.id, '✅ *"' + (chatInfo.title || chatInfo.id) + '" सीधे PostgreSQL डेटाबेस में जुड़ गया है!*');
     } catch (e: any) {
       await safeSend(ctx.chat.id, '❌ ग्रुप नहीं मिला: सुनिश्चित करें कि बॉट उस ग्रुप में Admin है। (' + (e?.message || '') + ')');
     }
@@ -1949,10 +1833,10 @@ bot.on('message', async (ctx) => {
 
   if (st.action === 'BC_NORM' || st.action === 'BC_PIN') {
     const pin = st.action === 'BC_PIN';
-    const us = Array.from(memDB.users.values());
-    const gs = await fetchChannelsList(true);
-    for (const u of us) { try { await ctx.telegram.copyMessage(u.telegram_id, ctx.chat.id, ctx.message.message_id); await sleep(80); } catch {} }
-    for (const g of gs) {
+    const us = await pool.query('SELECT telegram_id FROM users').catch(() => ({ rows: [] }));
+    const gs = await pool.query('SELECT chat_id FROM channels WHERE is_active=TRUE').catch(() => ({ rows: [] }));
+    for (const u of us.rows) { try { await ctx.telegram.copyMessage(u.telegram_id, ctx.chat.id, ctx.message.message_id); await sleep(80); } catch {} }
+    for (const g of gs.rows) {
       try {
         const m = await ctx.telegram.copyMessage(g.chat_id, ctx.chat.id, ctx.message.message_id);
         if (pin && m.message_id) await ctx.telegram.pinChatMessage(g.chat_id, m.message_id, { disable_notification: false }).catch(() => {});
@@ -1999,16 +1883,16 @@ bot.on('message', async (ctx) => {
 const launchBot = async () => {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-    setTimeout(() => { autoResumeOnServerBoot(); generateQuestionsBatch(); }, 2500);
+    setTimeout(() => { autoResumeOnServerBoot(); generateQuestionsBatch(); }, 3000);
     await bot.launch({ dropPendingUpdates: true });
-    console.log('Professor AI Quiz Bot V6.5 Successfully Launched!');
+    console.log('Professor AI Quiz Bot V6.7 Successfully Launched!');
   } catch (e: any) {
     console.error('Polling Error:', e?.message);
     setTimeout(launchBot, 6000);
   }
 };
 
-setTimeout(launchBot, 1500);
+setTimeout(launchBot, 2000);
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
