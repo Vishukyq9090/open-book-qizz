@@ -2,13 +2,14 @@ import { Telegraf, Markup } from 'telegraf';
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
 import http from 'http';
+import crypto from 'crypto';
 import cron from 'node-cron';
 
 dotenv.config();
 
 http.createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Professor AI Quiz Bot V6.7 (PostgreSQL Keep-Alive + Dynamic Groq/Gemini Seeder) Running 24/7!');
+  res.end('Professor AI Quiz Bot V8.0 Pro (Zero-Duplicate + Auto-Clean + Freemium + Mistake Book) Running 24/7!');
 }).listen(process.env.PORT || 3000);
 
 process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
@@ -33,9 +34,7 @@ const pool = new Pool({
   idleTimeoutMillis: 30000
 });
 
-pool.on('error', (err) => {
-  console.error('PostgreSQL Idle Client Warning:', err.message);
-});
+pool.on('error', (err) => console.error('PostgreSQL Pool Warning:', err.message));
 
 let dbStatusText = '⏳ Connecting to PostgreSQL...';
 
@@ -93,19 +92,48 @@ const getPollTimer = (subject: string, diff: string): number => {
 
 const activeTests = new Map<number, { timer: NodeJS.Timeout; subject: string; currentQ: number }>();
 const quizLobbies = new Map<number, { users: Map<number, string>; subject: string; updatedAt: number }>();
-const reminderMsgIds = new Map<number, number[]>();
+const tempChatMsgs = new Map<number, number[]>();
 const userStates = new Map<number, { action: string; targetId?: number; meta?: string }>();
 const cfgCache = new Map<string, { val: string; ts: number }>();
 const banCache = new Map<number, { banned: boolean; ts: number }>();
+const rateLimitMap = new Map<number, number>();
 
 let isSeedingNow = false;
 let seedingStartedAt = 0;
-let lastSeedReport = 'Initializing Multi-Engine Seeder...';
+let lastSeedReport = 'Initializing Smart Zero-Duplicate Seeder...';
 let apiKeyCursor = 0;
 let discoveredGeminiModels: string[] = [];
 let discoveredGroqModels: string[] = [];
 
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+// =========================================================
+// NORMALIZED QUESTION FINGERPRINT (100% DUPLICATE BLOCKER)
+// =========================================================
+const makeQuestionHash = (rawText: string): string => {
+  const cleaned = String(rawText || '')
+    .replace(/\[.*?\]/g, '') // Remove [UPPSC 2023], [Set-101], etc.
+    .replace(/\(.*?\)/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '') // Keep only letters & numbers across Hindi/English
+    .trim();
+  return crypto.createHash('md5').update(cleaned || rawText).digest('hex');
+};
+
+const trackTempMessage = (chatId: number, msgId?: number) => {
+  if (!msgId) return;
+  const arr = tempChatMsgs.get(chatId) || [];
+  arr.push(msgId);
+  tempChatMsgs.set(chatId, arr.slice(-15));
+};
+
+const clearTempGroupMessages = async (chatId: number) => {
+  const ids = tempChatMsgs.get(chatId) || [];
+  tempChatMsgs.delete(chatId);
+  for (const mid of ids) {
+    await bot.telegram.deleteMessage(chatId, mid).catch(() => {});
+  }
+};
 
 const fetchWithTimeout = async (url: string, options: any = {}, timeoutMs: number = 22000) => {
   const controller = new AbortController();
@@ -139,17 +167,18 @@ const getTodayKey = (): string => {
 };
 
 // =========================================================
-// DATABASE INITIALIZATION & 4-MINUTE KEEP-ALIVE HEARTBEAT
+// DATABASE INITIALIZATION, AUTO-VACUUM & 4-MIN KEEP-ALIVE
 // =========================================================
 const initDB = async (): Promise<boolean> => {
   try {
     await pool.query('SELECT 1');
     const queries = [
-      "CREATE TABLE IF NOT EXISTS users (telegram_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT, is_banned BOOLEAN DEFAULT FALSE, target_exam TEXT DEFAULT 'UPSC / UPPSC', preferred_subjects TEXT[] DEFAULT ARRAY['HISTORY','POLITY','GEOGRAPHY','CURRENT AFFAIRS'], alerts_enabled BOOLEAN DEFAULT TRUE, referred_by BIGINT DEFAULT NULL, ref_credited BOOLEAN DEFAULT FALSE, wallet_balance INT DEFAULT 0, referral_count INT DEFAULT 0, last_cleared_at TEXT DEFAULT NULL, joined_at TIMESTAMP DEFAULT NOW())",
+      "CREATE TABLE IF NOT EXISTS users (telegram_id BIGINT PRIMARY KEY, username TEXT, first_name TEXT, is_banned BOOLEAN DEFAULT FALSE, target_exam TEXT DEFAULT 'UPSC / UPPSC', preferred_subjects TEXT[] DEFAULT ARRAY['HISTORY','POLITY','GEOGRAPHY','CURRENT AFFAIRS'], alerts_enabled BOOLEAN DEFAULT TRUE, referred_by BIGINT DEFAULT NULL, ref_credited BOOLEAN DEFAULT FALSE, wallet_balance INT DEFAULT 0, referral_count INT DEFAULT 0, free_pdf_used BOOLEAN DEFAULT FALSE, last_cleared_at TEXT DEFAULT NULL, joined_at TIMESTAMP DEFAULT NOW())",
       "ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT DEFAULT NULL",
       "ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_credited BOOLEAN DEFAULT FALSE",
       "ALTER TABLE users ADD COLUMN IF NOT EXISTS wallet_balance INT DEFAULT 0",
       "ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_count INT DEFAULT 0",
+      "ALTER TABLE users ADD COLUMN IF NOT EXISTS free_pdf_used BOOLEAN DEFAULT FALSE",
       "ALTER TABLE users ADD COLUMN IF NOT EXISTS last_cleared_at TEXT DEFAULT NULL",
       "CREATE TABLE IF NOT EXISTS channels (chat_id BIGINT PRIMARY KEY, title TEXT, chat_type TEXT DEFAULT 'supergroup', owner_id BIGINT, is_active BOOLEAN DEFAULT TRUE, approval_status TEXT DEFAULT 'APPROVED', custom_caption TEXT DEFAULT NULL, trial_ends_at TIMESTAMP DEFAULT (NOW() + INTERVAL '30 days'), sub_ends_at TIMESTAMP DEFAULT NULL, checkpoints JSONB DEFAULT '{}'::jsonb)",
       "ALTER TABLE channels ADD COLUMN IF NOT EXISTS chat_type TEXT DEFAULT 'supergroup'",
@@ -158,13 +187,18 @@ const initDB = async (): Promise<boolean> => {
       "ALTER TABLE channels ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMP DEFAULT (NOW() + INTERVAL '30 days')",
       "ALTER TABLE channels ADD COLUMN IF NOT EXISTS sub_ends_at TIMESTAMP DEFAULT NULL",
       "ALTER TABLE channels ADD COLUMN IF NOT EXISTS checkpoints JSONB DEFAULT '{}'::jsonb",
-      "CREATE TABLE IF NOT EXISTS questions (id SERIAL PRIMARY KEY, subject TEXT, topic TEXT, question_text TEXT UNIQUE, option_a TEXT, option_b TEXT, option_c TEXT, option_d TEXT, correct_option TEXT, explanation TEXT, difficulty TEXT DEFAULT 'Medium', is_pyq BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT NOW())",
+      "CREATE TABLE IF NOT EXISTS questions (id SERIAL PRIMARY KEY, subject TEXT, topic TEXT, question_text TEXT UNIQUE, q_hash TEXT UNIQUE, option_a TEXT, option_b TEXT, option_c TEXT, option_d TEXT, correct_option TEXT, explanation TEXT, difficulty TEXT DEFAULT 'Medium', is_pyq BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT NOW())",
       "ALTER TABLE questions ADD COLUMN IF NOT EXISTS topic TEXT",
+      "ALTER TABLE questions ADD COLUMN IF NOT EXISTS q_hash TEXT",
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_q_hash ON questions(q_hash) WHERE q_hash IS NOT NULL",
       "ALTER TABLE questions ADD COLUMN IF NOT EXISTS is_pyq BOOLEAN DEFAULT FALSE",
       "CREATE TABLE IF NOT EXISTS syllabus_progress (subject TEXT PRIMARY KEY, topic_index INT DEFAULT 0, cycles_completed INT DEFAULT 0)",
-      "CREATE TABLE IF NOT EXISTS asked_history (chat_id BIGINT, question_id INT, PRIMARY KEY (chat_id, question_id))",
-      "CREATE TABLE IF NOT EXISTS poll_tracking (poll_id TEXT PRIMARY KEY, chat_id BIGINT, correct_index INT, created_at TIMESTAMP DEFAULT NOW())",
+      "CREATE TABLE IF NOT EXISTS asked_history (chat_id BIGINT, question_id INT, asked_at TIMESTAMP DEFAULT NOW(), PRIMARY KEY (chat_id, question_id))",
+      "ALTER TABLE asked_history ADD COLUMN IF NOT EXISTS asked_at TIMESTAMP DEFAULT NOW()",
+      "CREATE TABLE IF NOT EXISTS poll_tracking (poll_id TEXT PRIMARY KEY, chat_id BIGINT, question_id INT DEFAULT 0, correct_index INT, created_at TIMESTAMP DEFAULT NOW())",
+      "ALTER TABLE poll_tracking ADD COLUMN IF NOT EXISTS question_id INT DEFAULT 0",
       "ALTER TABLE poll_tracking ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()",
+      "CREATE TABLE IF NOT EXISTS user_mistakes (user_id BIGINT, question_id INT, wrong_at TIMESTAMP DEFAULT NOW(), PRIMARY KEY (user_id, question_id))",
       "CREATE TABLE IF NOT EXISTS test_scores (chat_id BIGINT, user_id BIGINT, username TEXT, right_count INT DEFAULT 0, wrong_count INT DEFAULT 0, net_marks NUMERIC(7,2) DEFAULT 0.00, PRIMARY KEY (chat_id, user_id))",
       "CREATE TABLE IF NOT EXISTS daily_scores (day_key TEXT, chat_id BIGINT, user_id BIGINT, username TEXT, right_count INT DEFAULT 0, wrong_count INT DEFAULT 0, net_marks NUMERIC(8,2) DEFAULT 0.00, PRIMARY KEY (day_key, chat_id, user_id))",
       "CREATE TABLE IF NOT EXISTS monthly_scores (month_key TEXT, user_id BIGINT, username TEXT, right_count INT DEFAULT 0, wrong_count INT DEFAULT 0, net_marks NUMERIC(8,2) DEFAULT 0.00, PRIMARY KEY (month_key, user_id))",
@@ -173,17 +207,27 @@ const initDB = async (): Promise<boolean> => {
     ];
     for (const q of queries) await pool.query(q).catch(() => {});
     dbStatusText = '🟢 PostgreSQL Connected & Active';
-    console.log('Professor V6.7 PostgreSQL Database Connected & Verified!');
+    console.log('Professor V8.0 Pro PostgreSQL Database Ready!');
     return true;
   } catch (e: any) {
     dbStatusText = '🔴 DB Connection Error: ' + String(e?.message || 'Check DATABASE_URL').substring(0, 45);
-    console.error('Database Init Error:', e?.message);
     return false;
   }
 };
 initDB();
 
-// Keep PostgreSQL awake 24/7 so Supabase/Neon never pauses it again
+// Auto-Cleanup Garbage Data Every 2 Hours + Keep DB Awake Every 4 Minutes
+const runDatabaseAutoCleaner = async () => {
+  try {
+    await pool.query("DELETE FROM poll_tracking WHERE created_at < NOW() - INTERVAL '2 hours'").catch(() => {});
+    await pool.query("DELETE FROM asked_history WHERE asked_at < NOW() - INTERVAL '15 days'").catch(() => {});
+    await pool.query("DELETE FROM user_mistakes WHERE wrong_at < NOW() - INTERVAL '30 days'").catch(() => {});
+    // Remove any legacy duplicate questions sharing the same normalized text
+    await pool.query("UPDATE questions SET q_hash = md5(lower(regexp_replace(question_text, '\\[.*?\\]|[^a-zA-Z0-9\\u0900-\\u097F]+', '', 'g'))) WHERE q_hash IS NULL").catch(() => {});
+    console.log('[AUTO-CLEANER] Old polls, expired history & garbage data purged!');
+  } catch {}
+};
+
 setInterval(async () => {
   try {
     await pool.query('SELECT 1');
@@ -192,6 +236,8 @@ setInterval(async () => {
     dbStatusText = '🔴 DB Disconnected (' + String(e?.message || '').substring(0, 35) + ')';
   }
 }, 240000);
+
+setInterval(runDatabaseAutoCleaner, 7200000);
 
 const getCfg = async (k: string): Promise<string> => {
   const cached = cfgCache.get(k);
@@ -207,13 +253,23 @@ const setCfg = async (k: string, v: string) => {
 };
 
 // =========================================================
-// GROUP AUTO-REGISTRATION & SERVICE MESSAGE AUTO-CLEANER
+// SECURITY SHIELD: ANTI-SPAM, AUTO-GROUP & SERVICE CLEANER
 // =========================================================
+const isGroupAdminOrMaster = async (ctx: any, chatId: number, uid: number): Promise<boolean> => {
+  if (isMaster(uid)) return true;
+  try {
+    const member = await ctx.telegram.getChatMember(chatId, uid);
+    return ['creator', 'administrator'].includes(member.status);
+  } catch {
+    return false;
+  }
+};
+
 bot.use(async (ctx, next) => {
   if (ctx.chat && ['group', 'supergroup', 'channel'].includes(ctx.chat.type)) {
     const gChat: any = ctx.chat;
     pool.query(
-      "INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,$2,$3,$4,TRUE,'APPROVED') ON CONFLICT(chat_id) DO UPDATE SET title=$2, is_active=TRUE",
+      "INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status, trial_ends_at) VALUES($1,$2,$3,$4,TRUE,'APPROVED', NOW() + INTERVAL '30 days') ON CONFLICT(chat_id) DO UPDATE SET title=$2",
       [ctx.chat.id, gChat.title || 'Quiz Group', ctx.chat.type, ctx.from?.id || Number(ADMIN_ID)]
     ).catch(() => {});
   }
@@ -233,9 +289,21 @@ bot.use(async (ctx, next) => {
       return;
     }
   }
+
   if (ctx.from) {
     if (isMaster(ctx.from.id)) return next();
     const uid = ctx.from.id;
+
+    // Anti-Spam Cooldown (1.1s between rapid commands/clicks per user)
+    if (ctx.message || ctx.callbackQuery) {
+      const lastTs = rateLimitMap.get(uid) || 0;
+      if (Date.now() - lastTs < 1100) {
+        if (ctx.callbackQuery) await ctx.answerCbQuery('⏳ कृपया धीरे क्लिक करें...').catch(() => {});
+        return;
+      }
+      rateLimitMap.set(uid, Date.now());
+    }
+
     let bState = banCache.get(uid);
     if (!bState || Date.now() - bState.ts > 300000) {
       const r = await pool.query('SELECT is_banned FROM users WHERE telegram_id=$1', [uid]).catch(() => ({ rows: [] }));
@@ -284,25 +352,34 @@ const creditReferralIfEligible = async (uid: number) => {
   } catch {}
 };
 
-const isGroupAllowedToPost = (row: any): { ok: boolean; reason: string } => {
-  if (!row) return { ok: true, reason: 'MASTER' };
-  if (row.owner_id && isMaster(Number(row.owner_id))) return { ok: true, reason: 'MASTER' };
-  if (row.approval_status === 'REJECTED') return { ok: false, reason: 'REJECTED' };
-  if (row.approval_status === 'PENDING') return { ok: false, reason: 'PENDING_APPROVAL' };
-  const now = new Date();
-  if (row.sub_ends_at && new Date(row.sub_ends_at) > now) return { ok: true, reason: 'SUB_ACTIVE' };
-  if (row.trial_ends_at && new Date(row.trial_ends_at) > now) return { ok: true, reason: 'TRIAL_ACTIVE' };
-  return { ok: true, reason: 'TRIAL_ACTIVE' };
+// =========================================================
+// FREEMIUM SUBSCRIPTION CHECK (30 DAYS FREE TRIAL -> 100 STARS)
+// =========================================================
+const isGroupAllowedToPost = (row: any): { ok: boolean; reason: string; daysLeft: number } => {
+  if (!row) return { ok: true, reason: 'MASTER', daysLeft: 365 };
+  if (row.owner_id && isMaster(Number(row.owner_id))) return { ok: true, reason: 'MASTER', daysLeft: 999 };
+  if (row.approval_status === 'REJECTED') return { ok: false, reason: 'REJECTED', daysLeft: 0 };
+
+  const now = Date.now();
+  if (row.sub_ends_at && new Date(row.sub_ends_at).getTime() > now) {
+    const d = Math.ceil((new Date(row.sub_ends_at).getTime() - now) / 86400000);
+    return { ok: true, reason: 'SUB_ACTIVE', daysLeft: d };
+  }
+  if (row.trial_ends_at && new Date(row.trial_ends_at).getTime() > now) {
+    const d = Math.ceil((new Date(row.trial_ends_at).getTime() - now) / 86400000);
+    return { ok: true, reason: 'TRIAL_ACTIVE', daysLeft: d };
+  }
+  return { ok: false, reason: 'EXPIRED', daysLeft: 0 };
 };
 
 // =========================================================
-// A4 OFFLINE PRINTABLE QUESTION PAPER + OMR + TXT
+// A4 OFFLINE PRINTABLE PAPER (1ST DOWNLOAD FREE -> 10 STARS)
 // =========================================================
 const sendGroupStarsInvoice = async (destChatId: number, targetGroupId: number) => {
   try {
     await bot.telegram.sendInvoice(destChatId, {
       title: 'Professor Quiz Bot - 1 Year Pro Activation',
-      description: 'अपने ग्रुप/चैनल में 1 साल (365 दिन) के लिए ऑटोमैटिक लाइव क्विज़ तुरंत एक्टिवेट करें।',
+      description: '30-दिन का फ्री ट्रायल समाप्त होने के बाद अपने ग्रुप/चैनल में 1 साल (365 दिन) के लिए ऑटोमैटिक लाइव क्विज़ एक्टिवेट करें।',
       payload: 'sub_group_' + targetGroupId,
       provider_token: '',
       currency: 'XTR',
@@ -315,7 +392,7 @@ const sendPdfStarsInvoice = async (destChatId: number, subject: string) => {
   try {
     await bot.telegram.sendInvoice(destChatId, {
       title: 'A4 Printable Coaching Test Paper (' + subject + ')',
-      description: '50 Verified Exam Questions + OMR Bubble Sheet + Answer Key (Print-Ready A4 PDF Format + Editable Text)',
+      description: 'आपका 1 Free PDF कोटा पूरा हो चुका है। 50 Verified Questions + OMR Sheet + Answer Key डाउनलोड करें:',
       payload: 'pdf_paper_' + subject,
       provider_token: '',
       currency: 'XTR',
@@ -324,7 +401,7 @@ const sendPdfStarsInvoice = async (destChatId: number, subject: string) => {
   } catch (e) { console.error('PDF Invoice Error:', e); }
 };
 
-const deliverOfflineTestPaper = async (chatId: number, subject: string, asTextOnly: boolean = false) => {
+const deliverOfflineTestPaper = async (chatId: number, subject: string, asTextOnly: boolean = false, wasFreeQuota: boolean = false) => {
   const isMixed = subject.startsWith('MIXED');
   let qRes = await pool.query(
     'SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) ORDER BY is_pyq DESC, RANDOM() LIMIT 50',
@@ -332,6 +409,7 @@ const deliverOfflineTestPaper = async (chatId: number, subject: string, asTextOn
   ).catch(() => ({ rows: [] }));
 
   if (qRes.rows.length === 0) {
+    isSeedingNow = false;
     await generateQuestionsBatch(isMixed ? undefined : subject);
     qRes = await pool.query(
       'SELECT * FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2) ORDER BY is_pyq DESC, RANDOM() LIMIT 50',
@@ -386,7 +464,6 @@ const deliverOfflineTestPaper = async (chatId: number, subject: string, asTextOn
     const qNum = idx + 1;
     qHtml += '<div class="q-block"><div class="q-title"><b>Q.' + qNum + '.</b> ' + q.question_text + '</div>';
     qHtml += '<div class="opts"><span>(A) ' + q.option_a + '</span><span>(B) ' + q.option_b + '</span><span>(C) ' + q.option_c + '</span><span>(D) ' + q.option_d + '</span></div></div>';
-
     omrHtml += '<div class="omr-row"><b>' + String(qNum).padStart(2, '0') + '.</b> <span class="bub">A</span><span class="bub">B</span><span class="bub">C</span><span class="bub">D</span></div>';
     ansHtml += '<div class="ans-row"><b>Q.' + qNum + ': (' + q.correct_option + ')</b> — ' + (q.explanation || '') + '</div>';
   });
@@ -431,11 +508,11 @@ const deliverOfflineTestPaper = async (chatId: number, subject: string, asTextOn
     { source: htmlBuf, filename: 'A4_Model_Paper_' + subject.replace(/\s+/g, '_') + '.html' },
     {
       caption:
-        '📄 *A4 Printable Offline Coaching Test Paper (' + subject + ')*\n' +
+        (wasFreeQuota ? '🎁 *आपका 1st FREE A4 Printable Model Paper अनलॉक हो गया है!*\n' : '') +
+        '📄 *A4 Coaching Test Paper (' + subject + ')*\n' +
         '━━━━━━━━━━━━━━━━━━━━━\n' +
-        '✅ *इसमें शामिल हैं:* 2-Column 50 Questions + OMR Bubble Sheet + Answer Key\n' +
-        '🖨️ *कैसे प्रिंट करें:* फाइल खोलकर ऊपर *हरे बटन (Save as A4 PDF / Print)* पर क्लिक करें।\n\n' +
-        '👇 *यदि आपके फोन में PDF सही न दिखे, तो नीचे दिए गए बटन से Editable Text लें या एडमिन को शिकायत भेजें:*',
+        '✅ *शामिल हैं:* 2-Column 50 Questions + OMR Sheet + Answer Key\n' +
+        '🖨️ *कैसे प्रिंट करें:* फाइल खोलकर ऊपर *हरे बटन (Save as A4 PDF / Print)* पर क्लिक करें।',
       parse_mode: 'Markdown',
       ...Markup.inlineKeyboard([
         [Markup.button.callback('📝 Get Editable Text (.txt) Fallback', 'pdf_txt_' + subject)],
@@ -456,21 +533,21 @@ bot.on('successful_payment', async (ctx) => {
   } else if (payload.startsWith('pdf_paper_')) {
     const sub = payload.replace('pdf_paper_', '');
     await safeSend(ctx.chat.id, '✅ *10 Stars प्राप्त हुए!* आपका A4 Printable Offline Question Paper तैयार किया जा रहा है...');
-    await deliverOfflineTestPaper(ctx.chat.id, sub, false);
+    await deliverOfflineTestPaper(ctx.chat.id, sub, false, false);
   }
 });
 
 bot.action(/^pdf_txt_(.+)$/, async (ctx) => {
   const sub = ctx.match[1];
   await ctx.answerCbQuery('Sending Editable Text File...');
-  return deliverOfflineTestPaper(ctx.chat.id, sub, true);
+  return deliverOfflineTestPaper(ctx.chat.id, sub, true, false);
 });
 
 bot.action(/^pdf_comp_(.+)$/, async (ctx) => {
   const sub = ctx.match[1];
   userStates.set(ctx.from.id, { action: 'PDF_COMPLAINT', meta: sub });
   await ctx.answerCbQuery();
-  await deliverOfflineTestPaper(ctx.chat.id, sub, true);
+  await deliverOfflineTestPaper(ctx.chat.id, sub, true, false);
   return safeSend(
     ctx.chat.id,
     '📝 *हमने तुरंत आपके लिए Editable Text (.txt) फाइल ऊपर भेज दी है ताकि आपका काम न रुके!*\n\n' +
@@ -482,13 +559,13 @@ bot.action(/^adm_sendtxt_(\d+)_(.+)$/, async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
   const targetUid = Number(ctx.match[1]);
   const sub = ctx.match[2];
-  await deliverOfflineTestPaper(targetUid, sub, true);
+  await deliverOfflineTestPaper(targetUid, sub, true, false);
   await safeSend(targetUid, '✅ *मास्टर एडमिन ने आपकी शिकायत का समाधान करते हुए Editable Text पेपर भेज दिया है!*');
   await ctx.answerCbQuery('Sent Editable Paper to User!', { show_alert: true });
 });
 
 // =========================================================
-// DYNAMIC GROQ + GEMINI MODEL DISCOVERY & POSTGRES SEEDER
+// ZERO-DUPLICATE GROQ + GEMINI SEEDER WITH CONTEXT EXCLUSION
 // =========================================================
 let seedCursor = 0;
 
@@ -525,7 +602,6 @@ const getActiveGroqModels = async (gKey: string): Promise<string[]> => {
       });
       if (valid.length > 0) {
         discoveredGroqModels = valid.slice(0, 5);
-        console.log('Active Groq Models:', discoveredGroqModels.join(', '));
         return discoveredGroqModels;
       }
     }
@@ -553,7 +629,6 @@ const getActiveGeminiModels = async (apiKey: string): Promise<string[]> => {
       valid.sort((a: string, b: string) => (b.includes('flash') ? 10 : 0) - (a.includes('flash') ? 10 : 0));
       if (valid.length > 0) {
         discoveredGeminiModels = valid.slice(0, 5);
-        console.log('Active Gemini Models:', discoveredGeminiModels.join(', '));
         return discoveredGeminiModels;
       }
     }
@@ -576,7 +651,7 @@ const getNextSubjectAndTopic = async (forcedSubject?: string): Promise<{ subject
       const c = countMap[s] || 0;
       if (c < minVal) { minVal = c; minSub = s; }
     }
-    if (minSub && minVal < 200 && seedCursor % 2 === 0) subject = minSub;
+    if (minSub && minVal < 250 && seedCursor % 2 === 0) subject = minSub;
   }
 
   if (!subject) subject = coreSubjects[seedCursor++ % coreSubjects.length];
@@ -627,18 +702,26 @@ const parseAIJsonArray = (raw: string): any[] | null => {
 
 const saveQuestionsToDB = async (arr: any[], subject: string, topic: string): Promise<number> => {
   let saved = 0;
+  const batchSeenHashes = new Set<string>();
+
   for (const q of arr) {
     if (!q || !q.question_text || !q.option_a || !q.option_b || !q.option_c || !q.option_d || !q.correct_option) continue;
     const cOpt = q.correct_option.toString().trim().toUpperCase().charAt(0);
     if (!['A', 'B', 'C', 'D'].includes(cOpt)) continue;
     if (q.option_a === q.option_b && q.option_b === q.option_c) continue;
 
+    const qText = String(q.question_text).trim().substring(0, 230);
+    const qHash = makeQuestionHash(qText);
+    if (batchSeenHashes.has(qHash)) continue;
+    batchSeenHashes.add(qHash);
+
     const res = await pool.query(
-      'INSERT INTO questions (subject, topic, question_text, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, is_pyq) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (question_text) DO NOTHING RETURNING id',
+      'INSERT INTO questions (subject, topic, question_text, q_hash, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, is_pyq) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING RETURNING id',
       [
         subject,
         topic,
-        String(q.question_text).trim().substring(0, 230),
+        qText,
+        qHash,
         String(q.option_a).trim().substring(0, 95),
         String(q.option_b).trim().substring(0, 95),
         String(q.option_c).trim().substring(0, 95),
@@ -682,23 +765,33 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
     const { subject, topic } = await getNextSubjectAndTopic(forcedSub);
     const examTarget = EXAM_TARGET_MAP[subject] || 'UPSC, PSC, SSC, Railway';
-    const salt = Math.floor(1000 + Math.random() * 9000);
+
+    // Fetch existing recent answers on this topic so AI never repeats the same facts
+    const recentRes = await pool.query(
+      'SELECT option_a, option_b, option_c, option_d, correct_option FROM questions WHERE subject=$1 AND topic=$2 ORDER BY id DESC LIMIT 18',
+      [subject, topic]
+    ).catch(() => ({ rows: [] }));
+    const usedAnswers = recentRes.rows.map((r: any) => {
+      const m: Record<string, string> = { A: r.option_a, B: r.option_b, C: r.option_c, D: r.option_d };
+      return m[r.correct_option] || r.option_a;
+    }).filter(Boolean).join(', ');
 
     const prompt = [
-      'You are an authoritative Indian Competitive Exam Paper Setter for: ' + examTarget + ' (Set #' + salt + ').',
+      'You are an authoritative Indian Competitive Exam Paper Setter for: ' + examTarget + '.',
       'Generate 15 unique, 100% fact-checked, NCERT & Official Answer-Key verified MCQs on:',
       'Subject: ' + subject + ' | Specific Topic: ' + topic,
+      usedAnswers ? 'IMPORTANT DUPLICATE PREVENTION: Do NOT create questions whose main answer is already in this list: [' + usedAnswers + ']. Pick completely fresh facts, articles, years, or concepts!' : '',
       'Language: Hindi (if subject is ENGLISH, write in English).',
       'Distribution: 3 "Easy", 3 "Medium", 3 "Hard", 3 "Ultra Hard", and 3 "Max Hard" questions.',
-      'At least 5 questions MUST be most-repeated Previous Year Questions (mention exam & year like [UPPSC 2023] or [SSC CGL 2022] at end of question_text) with "is_pyq": true.',
+      'At least 5 questions MUST be Previous Year Questions (mention exam & year like [UPPSC 2023] or [SSC CGL 2022] at end of question_text) with "is_pyq": true.',
       'Return ONLY a valid JSON array of 15 objects, each having keys:',
       '"question_text" (max 205 chars), "option_a", "option_b", "option_c", "option_d" (max 80 chars each), "correct_option" ("A","B","C", or "D"), "explanation" (max 150 chars), "difficulty" ("Easy","Medium","Hard","Ultra Hard","Max Hard"), "is_pyq" (boolean).'
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
     let groqErr = '';
     let geminiErr = '';
 
-    // 1. Try Dynamically Discovered Active Groq Models (gsk_)
+    // 1. Dynamically Discovered Active Groq Models (gsk_)
     for (const gKey of groqKeys) {
       const groqModels = await getActiveGroqModels(gKey);
       for (const mName of groqModels) {
@@ -709,10 +802,10 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             body: JSON.stringify({
               model: mName,
               messages: [
-                { role: 'system', content: 'You are an Indian exam question setter. Output strictly a valid JSON array of 15 question objects.' },
+                { role: 'system', content: 'You are an Indian exam question setter. Output strictly a valid JSON array of 15 unique question objects.' },
                 { role: 'user', content: prompt }
               ],
-              temperature: 0.7
+              temperature: 0.75
             })
           }, 22000);
           const d: any = await r.json();
@@ -727,8 +820,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
           const saved = await saveQuestionsToDB(arr, subject, topic);
           if (saved > 0) {
-            lastSeedReport = '✅ Groq AI (' + mName + ') +' + saved + ' Qs [' + subject + ']';
-            console.log(lastSeedReport);
+            lastSeedReport = '✅ Groq AI (' + mName + ') +' + saved + ' Unique Qs [' + subject + ']';
             isSeedingNow = false;
             return { ok: true, count: saved, sub: subject, topic, provider: 'Groq AI (' + mName + ')' };
           }
@@ -738,7 +830,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       }
     }
 
-    // 2. Try Dynamically Discovered Active Gemini Models (AIza)
+    // 2. Dynamically Discovered Active Gemini Models (AIza)
     if (geminiKeys.length > 0) {
       const modelsToTry = await getActiveGeminiModels(geminiKeys[0]);
       for (let k = 0; k < geminiKeys.length; k++) {
@@ -752,7 +844,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { temperature: 0.7 }
+                generationConfig: { temperature: 0.75 }
               })
             }, 22000);
             const d: any = await r.json();
@@ -768,8 +860,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             const saved = await saveQuestionsToDB(arr, subject, topic);
             if (saved > 0) {
               apiKeyCursor = keyIndex + 1;
-              lastSeedReport = '✅ Gemini (' + model + ') +' + saved + ' Qs [' + subject + ']';
-              console.log(lastSeedReport);
+              lastSeedReport = '✅ Gemini (' + model + ') +' + saved + ' Unique Qs [' + subject + ']';
               isSeedingNow = false;
               return { ok: true, count: saved, sub: subject, topic, provider: 'Gemini (' + model + ')' };
             }
@@ -780,23 +871,20 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       }
     }
 
-    // 3. Try OpenAI Keys (sk-) if present
+    // 3. OpenAI Fallback
     for (const sKey of openaiKeys) {
       try {
         const r = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + sKey },
-          body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [{ role: 'user', content: prompt }]
-          })
+          body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }] })
         }, 22000);
         const d: any = await r.json();
         const arr = parseAIJsonArray(d.choices?.[0]?.message?.content || '');
         if (arr && arr.length > 0) {
           const saved = await saveQuestionsToDB(arr, subject, topic);
           if (saved > 0) {
-            lastSeedReport = '✅ ChatGPT +' + saved + ' Qs [' + subject + ']';
+            lastSeedReport = '✅ ChatGPT +' + saved + ' Unique Qs [' + subject + ']';
             isSeedingNow = false;
             return { ok: true, count: saved, sub: subject, topic, provider: 'ChatGPT' };
           }
@@ -804,8 +892,8 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
       } catch {}
     }
 
-    const errSummary = [groqErr, geminiErr].filter(Boolean).join(' | ') || 'Check API Keys';
-    lastSeedReport = '❌ ' + errSummary;
+    const errSummary = [groqErr, geminiErr].filter(Boolean).join(' | ') || 'All generated questions were duplicates';
+    lastSeedReport = '⚠️ ' + errSummary;
     isSeedingNow = false;
     return { ok: false, count: 0, sub: subject, topic, provider: 'NONE', error: errSummary };
   } catch (e: any) {
@@ -814,7 +902,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
   }
 };
 
-// Non-Stop Auto-Seeder Every 60 Seconds into PostgreSQL
+// Non-Stop Auto-Seeder Every 60 Seconds
 setInterval(() => {
   generateQuestionsBatch().catch(() => {});
 }, 60000);
@@ -833,14 +921,9 @@ const getTopicSummaryMeta = async (subject: string) => {
   return { currentTopic, prevTopics, totalSubjectQs };
 };
 
-const clearOldReminders = async (chatId: number) => {
-  const ids = reminderMsgIds.get(chatId) || [];
-  for (const mid of ids) await bot.telegram.deleteMessage(chatId, mid).catch(() => {});
-  reminderMsgIds.delete(chatId);
-};
-
 const announceAndPinLeaderboard = async (chatId: number, subject: string) => {
   try {
+    await clearTempGroupMessages(chatId);
     const giftTag = await getCfg('gift_tagline');
     const seoTags = await getCfg('seo_tags');
     const top = await pool.query('SELECT user_id, username, right_count, wrong_count, net_marks FROM test_scores WHERE chat_id=$1 ORDER BY net_marks DESC, right_count DESC LIMIT 10', [chatId]);
@@ -863,8 +946,8 @@ const announceAndPinLeaderboard = async (chatId: number, subject: string) => {
     }
 
     msg += '*' + giftTag + '*\n';
-    msg += '📄 *A4 Printable Paper:* /pdf | 🏆 *Monthly Top:* /monthlytop\n';
-    msg += '⏳ *अगला विषय टेस्ट ठीक 10 मिनट बाद शुरू होगा!*\n' + seoTags;
+    msg += '📓 *गलत सवालों का रिवीजन:* बॉट के DM में `/mistakes` लिखें!\n';
+    msg += '📄 *1st Free A4 Paper:* /pdf | 📊 *Report:* /myreport\n' + seoTags;
 
     const sent = await safeSend(chatId, msg, Markup.inlineKeyboard([
       [Markup.button.callback('🙋‍♂️ Ready for Next Quiz (0/3)', 'ready_quiz_' + chatId), Markup.button.callback('👑 Admin Instant Start', 'gstart_' + chatId)]
@@ -880,6 +963,7 @@ const announceDailyClosingReport = async () => {
 
   for (const c of chs.rows) {
     const cid = Number(c.chat_id);
+    await clearTempGroupMessages(cid);
     const top = await pool.query(
       'SELECT user_id, username, right_count, wrong_count, net_marks FROM daily_scores WHERE day_key=$1 AND chat_id=$2 ORDER BY net_marks DESC LIMIT 10',
       [dayKey, cid]
@@ -916,13 +1000,14 @@ const stopTestInGroup = async (chatId: number, saveCheckpoint: boolean = true) =
 
   if (saveCheckpoint && running.currentQ < 50) {
     await pool.query("UPDATE channels SET checkpoints = jsonb_set(COALESCE(checkpoints, '{}'::jsonb), ARRAY[$1], to_jsonb($2::int)) WHERE chat_id = $3", [running.subject, running.currentQ, chatId]).catch(() => {});
-    await safeSend(
+    const sent = await safeSend(
       chatId,
       '⏸ *' + running.subject + ' टेस्ट Q.' + running.currentQ + ' पर रुका।* अगले राउंड में यहीं से आगे बढ़ेगा!\n👇 *3 छात्र Ready बटन दबाकर या एडमिन 1-Click से तुरंत टेस्ट दोबारा शुरू कर सकते हैं:*',
       Markup.inlineKeyboard([
         [Markup.button.callback('🙋‍♂️ Ready to Resume (0/3)', 'ready_quiz_' + chatId), Markup.button.callback('👑 Admin Start', 'gstart_' + chatId)]
       ])
     );
+    if (sent && 'message_id' in sent) trackTempMessage(chatId, sent.message_id);
   }
 };
 
@@ -935,6 +1020,7 @@ const sendQuizSafe = async (chatId: number, questionText: string, opts: string[]
 };
 
 const openThreePlayerLobby = async (chatId: number, subject: string) => {
+  await clearTempGroupMessages(chatId);
   const lobby = { users: new Map<number, string>(), subject, updatedAt: Date.now() };
   quizLobbies.set(chatId, lobby);
   const meta = await getTopicSummaryMeta(subject);
@@ -944,7 +1030,7 @@ const openThreePlayerLobby = async (chatId: number, subject: string) => {
     '• 👥 *Status:* *0/3 छात्र ऑनलाइन तैयार हैं*\n\n' +
     '👇 *नीचे "🙋‍♂️ I\'m Ready" बटन दबाएं—जैसे ही 3 ऑनलाइन लोग बटन दबाएंगे (या एडमिन Start दबाएंगे), लाइव क्विज़ तुरंत शुरू हो जाएगा!*';
 
-  await safeSend(
+  const sent = await safeSend(
     chatId,
     txt,
     Markup.inlineKeyboard([
@@ -952,25 +1038,25 @@ const openThreePlayerLobby = async (chatId: number, subject: string) => {
       [Markup.button.callback('👑 Admin Instant Start (1-Click)', 'gstart_' + chatId)]
     ])
   );
+  if (sent && 'message_id' in sent) trackTempMessage(chatId, sent.message_id);
 };
 
 const startHourlySubjectTest = async (chatId: number, subject: string, resumeFromMinuteOffset: number = 0, forceStart: boolean = false) => {
   if (activeTests.has(chatId)) await stopTestInGroup(chatId, true);
-  await clearOldReminders(chatId);
+  await clearTempGroupMessages(chatId);
   quizLobbies.delete(chatId);
 
   let chRes = await pool.query('SELECT * FROM channels WHERE chat_id=$1', [chatId]).catch(() => ({ rows: [] }));
   if (chRes.rows.length === 0) {
-    await pool.query("INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,'Quiz Group','supergroup',$2,TRUE,'APPROVED') ON CONFLICT DO NOTHING", [chatId, Number(ADMIN_ID)]).catch(() => {});
+    await pool.query("INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status, trial_ends_at) VALUES($1,'Quiz Group','supergroup',$2,TRUE,'APPROVED', NOW() + INTERVAL '30 days') ON CONFLICT DO NOTHING", [chatId, Number(ADMIN_ID)]).catch(() => {});
     chRes = await pool.query('SELECT * FROM channels WHERE chat_id=$1', [chatId]).catch(() => ({ rows: [] }));
   }
   const ch = chRes.rows[0] || { chat_id: chatId, title: 'Quiz Group', chat_type: 'supergroup', approval_status: 'APPROVED', is_active: true };
 
   const perm = isGroupAllowedToPost(ch);
   if (!perm.ok) {
-    if (perm.reason === 'PENDING_APPROVAL') return safeSend(chatId, '⏳ *यह ग्रुप/चैनल अभी मास्टर एडमिन के अप्रूवल की प्रतीक्षा में है।*');
     if (perm.reason === 'EXPIRED') {
-      await safeSend(chatId, '⚠️ *30 दिनों का फ्री ट्रायल समाप्त हो चुका है!* 1 साल के लिए *100 Stars* से एक्टिवेट करें:');
+      await safeSend(chatId, '⚠️ *इस ग्रुप का 30 दिनों का फ्री ट्रायल समाप्त हो चुका है!*\nपूरे 1 साल (365 दिन) अनलिमिटेड लाइव टेस्ट चलाने के लिए *100 Stars* से एक्टिवेट करें:');
       return sendGroupStarsInvoice(chatId, chatId);
     }
     return;
@@ -994,11 +1080,11 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
     '🏛 *LIVE TEST: ' + subject + '* ' + (currentQ > 0 ? '*(Resume Q.' + (currentQ + 1) + ')*' : '') + '\n' +
     '• 🎯 *Exams:* ' + (EXAM_TARGET_MAP[subject] || 'All Exams') + '\n' +
     '• 📌 *Topic:* ' + meta.currentTopic + '\n' +
-    '• ✅ *Done Keywords:* ' + meta.prevTopics + ' (' + meta.totalSubjectQs + ' Qs in Bank)\n' +
+    '• ✅ *Question Bank:* ' + meta.totalSubjectQs + ' Unique Qs\n' +
     '• 📋 *Rule:* 50 Qs | ⚖️ -1/4 Negative | ⏱ 15s-55s\n' +
     customCap + seoTags,
     Markup.inlineKeyboard([
-      [Markup.button.callback('🛑 Stop Test', 'pause_test_' + chatId), Markup.button.callback('📄 Get A4 PDF (10⭐)', 'buy_pdf_' + subject)]
+      [Markup.button.callback('🛑 Stop Test (Admin)', 'pause_test_' + chatId), Markup.button.callback('📄 Get A4 PDF (1st Free)', 'buy_pdf_' + subject)]
     ])
   );
 
@@ -1045,7 +1131,7 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
       }
 
       const q = qRes.rows[0];
-      await pool.query('INSERT INTO asked_history(chat_id, question_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [chatId, q.id]).catch(() => {});
+      await pool.query('INSERT INTO asked_history(chat_id, question_id, asked_at) VALUES($1,$2,NOW()) ON CONFLICT DO NOTHING', [chatId, q.id]).catch(() => {});
 
       const pollDuration = getPollTimer(q.subject || subject, q.difficulty || targetDiff);
       const pyqTag = q.is_pyq ? '⭐PYQ ' : '';
@@ -1059,7 +1145,7 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
 
       const sentPoll = await sendQuizSafe(chatId, questionText, opts, finalIdx, '💡 ' + (q.explanation || 'सत्यापित उत्तर।').substring(0, 185), pollDuration);
       if (sentPoll?.poll?.id) {
-        await pool.query('INSERT INTO poll_tracking(poll_id, chat_id, correct_index) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [sentPoll.poll.id, chatId, finalIdx]).catch(() => {});
+        await pool.query('INSERT INTO poll_tracking(poll_id, chat_id, question_id, correct_index) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING', [sentPoll.poll.id, chatId, q.id, finalIdx]).catch(() => {});
       }
     } catch {}
   };
@@ -1081,6 +1167,7 @@ bot.action(/^ready_quiz_(-?\d+)$/, async (ctx) => {
 
   if (isMaster(ctx.from.id)) {
     await ctx.answerCbQuery('👑 Admin Instant Start: ' + sub + ' Quiz शुरू हो रहा है!');
+    await ctx.deleteMessage().catch(() => {});
     return startHourlySubjectTest(cid, sub, 0, true);
   }
 
@@ -1100,7 +1187,7 @@ bot.action(/^ready_quiz_(-?\d+)$/, async (ctx) => {
   if (readyCount >= 3) {
     quizLobbies.delete(cid);
     await ctx.answerCbQuery('🎉 3 छात्र तैयार! लाइव क्विज़ शुरू हो रहा है!');
-    await safeEdit(ctx, '🚀 *3 ऑनलाइन छात्र तैयार हो चुके हैं (' + namesList + ')!*\n🔥 *' + lobby.subject + '* का लाइव टेस्ट शुरू किया जा रहा है...');
+    await ctx.deleteMessage().catch(() => {});
     return startHourlySubjectTest(cid, lobby.subject, 0, true);
   }
 
@@ -1122,13 +1209,16 @@ bot.action(/^ready_quiz_(-?\d+)$/, async (ctx) => {
 });
 
 bot.command('startquiz', async (ctx) => {
-  if (ctx.chat.type === 'private') return ctx.reply('यह कमांड अपने ग्रुप के अंदर लिखें।');
+  if (ctx.chat.type === 'private') return ctx.reply('यह कमांड अपने ग्रुप के अंदर लिखें, या DM प्रैक्टिस के लिए /practice लिखें।');
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
   const sub = getSubjectForHour(ist.getUTCHours());
-  if (isMaster(ctx.from.id)) return startHourlySubjectTest(ctx.chat.id, sub, 0, true);
+  if (await isGroupAdminOrMaster(ctx, ctx.chat.id, ctx.from.id)) return startHourlySubjectTest(ctx.chat.id, sub, 0, true);
   return openThreePlayerLobby(ctx.chat.id, sub);
 });
 
+// =========================================================
+// POLL ANSWER TRACKER + MISTAKE NOTEBOOK SAVER
+// =========================================================
 bot.on('poll_answer', async (ctx) => {
   try {
     const ans = ctx.pollAnswer;
@@ -1137,14 +1227,23 @@ bot.on('poll_answer', async (ctx) => {
     const uname = (ans.user.first_name || ans.user.username || 'Student').replace(/[*_`[\]]/g, '').substring(0, 18);
     const chosen = ans.option_ids[0];
 
-    const pRes = await pool.query('SELECT chat_id, correct_index FROM poll_tracking WHERE poll_id=$1', [ans.poll_id]);
+    const pRes = await pool.query('SELECT chat_id, question_id, correct_index FROM poll_tracking WHERE poll_id=$1', [ans.poll_id]);
     if (pRes.rows.length === 0) return;
-    const { chat_id, correct_index } = pRes.rows[0];
+    const { chat_id, question_id, correct_index } = pRes.rows[0];
 
     const isRight = chosen === Number(correct_index);
     const rInc = isRight ? 1 : 0;
     const wInc = isRight ? 0 : 1;
     const markDelta = isRight ? 1.00 : -0.25;
+
+    // Save or remove from Mistake Notebook automatically
+    if (Number(question_id) > 0) {
+      if (!isRight) {
+        await pool.query('INSERT INTO user_mistakes(user_id, question_id, wrong_at) VALUES($1,$2,NOW()) ON CONFLICT (user_id, question_id) DO UPDATE SET wrong_at=NOW()', [uid, question_id]).catch(() => {});
+      } else {
+        await pool.query('DELETE FROM user_mistakes WHERE user_id=$1 AND question_id=$2', [uid, question_id]).catch(() => {});
+      }
+    }
 
     await pool.query(
       'INSERT INTO test_scores (chat_id, user_id, username, right_count, wrong_count, net_marks) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (chat_id, user_id) DO UPDATE SET username = $3, right_count = test_scores.right_count + $4, wrong_count = test_scores.wrong_count + $5, net_marks = test_scores.net_marks + $6',
@@ -1187,12 +1286,12 @@ const sendPreTestReminders = async (minsLeft: number) => {
     if (!isGroupAllowedToPost(ch).ok) continue;
     const cid = Number(ch.chat_id);
     if (minsLeft === 1) {
+      await clearTempGroupMessages(cid);
       const instructionText =
         '🚨 *1 MIN LEFT — LIVE TEST INSTRUCTIONS* 🚨\n' +
         '• 📘 *Subject:* ' + nextSub + ' (50 Qs)\n' +
         '• 🎯 *Exams:* ' + (EXAM_TARGET_MAP[nextSub] || 'All Exams') + '\n' +
         '• 📌 *Topic:* ' + meta.currentTopic + '\n' +
-        '• ✅ *Covered:* ' + meta.prevTopics + '\n' +
         '• ⚖️ *Negative Marking:* 1/4 (-0.25 per wrong answer)\n' +
         '• 🔔 *Ready:* ' + (mentionList || 'सभी अभ्यर्थी तैयार रहें!');
       const sent = await safeSend(
@@ -1200,25 +1299,18 @@ const sendPreTestReminders = async (minsLeft: number) => {
         instructionText,
         Markup.inlineKeyboard([[Markup.button.callback("🙋‍♂️ I'm Ready (0/3)", 'ready_quiz_' + cid), Markup.button.callback('👑 Admin Start', 'gstart_' + cid)]])
       );
-      if (sent && 'message_id' in sent) await bot.telegram.pinChatMessage(cid, sent.message_id, { disable_notification: false }).catch(() => {});
+      if (sent && 'message_id' in sent) {
+        trackTempMessage(cid, sent.message_id);
+        await bot.telegram.pinChatMessage(cid, sent.message_id, { disable_notification: false }).catch(() => {});
+      }
     } else {
       const sent = await safeSend(
         cid,
         '⏰ *Test Alert (' + minsLeft + 'm Left):* *' + nextSub + '*\n• 📌 *Topic:* ' + meta.currentTopic + ' | ⚖️ -1/4 Negative\n🔔 ' + (mentionList || 'तैयार रहें!')
       );
-      if (sent && 'message_id' in sent) {
-        const list = reminderMsgIds.get(cid) || [];
-        list.push(sent.message_id);
-        reminderMsgIds.set(cid, list);
-      }
+      if (sent && 'message_id' in sent) trackTempMessage(cid, sent.message_id);
     }
     await sleep(300);
-  }
-  if (minsLeft === 10) {
-    for (const u of users.rows) {
-      await safeSend(u.telegram_id, '🔔 *Alert:* *' + nextSub + '* (' + meta.currentTopic + ') का लाइव टेस्ट *10 मिनट* में शुरू हो रहा है!');
-      await sleep(150);
-    }
   }
 };
 
@@ -1238,22 +1330,6 @@ cron.schedule('0 8-22 * * *', async () => {
 
 cron.schedule('0 23 * * *', () => announceDailyClosingReport(), { timezone: 'Asia/Kolkata' });
 
-cron.schedule('0 14 */2 * *', async () => {
-  const promo = await getCfg('promo_msg');
-  const botUser = bot.botInfo?.username || '';
-  const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
-  const kb: any[][] = [
-    [Markup.button.url('➕ Add to Group (1-Click)', 'https://t.me/' + botUser + '?startgroup=true&admin=' + adminPerms)],
-    [Markup.button.url('📢 Add to Channel (1-Click)', 'https://t.me/' + botUser + '?startchannel=true&admin=' + adminPerms)]
-  ];
-  const chs = await pool.query('SELECT chat_id FROM channels WHERE is_active=TRUE').catch(() => ({ rows: [] }));
-  for (const c of chs.rows) { await safeSend(c.chat_id, promo, Markup.inlineKeyboard(kb)); await sleep(350); }
-}, { timezone: 'Asia/Kolkata' });
-
-cron.schedule('0 2 * * *', async () => {
-  await pool.query("DELETE FROM poll_tracking WHERE created_at < NOW() - INTERVAL '1 day'").catch(() => {});
-}, { timezone: 'Asia/Kolkata' });
-
 const autoResumeOnServerBoot = async () => {
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
   const hr = ist.getUTCHours();
@@ -1269,27 +1345,145 @@ const autoResumeOnServerBoot = async () => {
 };
 
 // =========================================================
-// USER INTERFACE & PDF MENU
+// PRO STUDENT FEATURES: REPORT CARD, MISTAKES & SOLO PRACTICE
+// =========================================================
+const renderStudentReport = async (ctx: any) => {
+  const uid = ctx.from.id;
+  const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
+  const monthKey = ist.getUTCFullYear() + '-' + String(ist.getUTCMonth() + 1).padStart(2, '0');
+
+  const [uRes, mRes, mistRes] = await Promise.all([
+    pool.query('SELECT wallet_balance, referral_count, free_pdf_used, target_exam FROM users WHERE telegram_id=$1', [uid]).catch(() => ({ rows: [] })),
+    pool.query('SELECT right_count, wrong_count, net_marks FROM monthly_scores WHERE month_key=$1 AND user_id=$2', [monthKey, uid]).catch(() => ({ rows: [] })),
+    pool.query('SELECT COUNT(*) FROM user_mistakes WHERE user_id=$1', [uid]).catch(() => ({ rows: [{ count: 0 }] }))
+  ]);
+
+  const u = uRes.rows[0] || { wallet_balance: 0, referral_count: 0, free_pdf_used: false, target_exam: 'UPSC / UPPSC' };
+  const m = mRes.rows[0] || { right_count: 0, wrong_count: 0, net_marks: 0 };
+  const totalAttempt = Number(m.right_count) + Number(m.wrong_count);
+  const acc = totalAttempt > 0 ? ((Number(m.right_count) / totalAttempt) * 100).toFixed(1) : '0.0';
+  const mistakeCnt = Number(mistRes.rows[0]?.count || 0);
+
+  const msg =
+    '📊 *STUDENT PERFORMANCE REPORT CARD* 📊\n' +
+    '━━━━━━━━━━━━━━━━━━━━━\n' +
+    '👤 *अभ्यर्थी:* ' + (ctx.from.first_name || 'Student') + '\n' +
+    '🎯 *लक्ष्य परीक्षा:* ' + (u.target_exam || 'All Exams') + '\n' +
+    '✅ *सही उत्तर (इस माह):* ' + m.right_count + ' | ❌ *गलत:* ' + m.wrong_count + '\n' +
+    '🎯 *सटीकता (Accuracy):* *' + acc + '%*\n' +
+    '🏆 *कुल नेट स्कोर:* *' + Number(m.net_marks || 0).toFixed(2) + ' Marks*\n' +
+    '📓 *Mistake Notebook:* *' + mistakeCnt + ' सवाल रिवीजन हेतु बाकी*\n' +
+    '🎁 *Free A4 PDF कोटा:* *' + (u.free_pdf_used ? 'Used (Next 10⭐)' : '1 Free Download Available 🟢') + '*\n' +
+    '💰 *रेफ़रल वॉलेट:* ₹' + (u.wallet_balance || 0) + ' (' + (u.referral_count || 0) + ' Refers)';
+
+  const kb = Markup.inlineKeyboard([
+    [Markup.button.callback('📓 Practice My Mistakes (' + mistakeCnt + ')', 'u_mistakes'), Markup.button.callback('⚡ Solo Practice Quiz', 'u_practice')],
+    [Markup.button.callback('📄 Download A4 Paper', 'u_pdf_menu'), Markup.button.callback('🔙 Main Menu', 'u_home')]
+  ]);
+  if (ctx.callbackQuery) return safeEdit(ctx, msg, kb);
+  return safeSend(ctx.chat.id, msg, kb);
+};
+
+bot.command('myreport', (ctx) => renderStudentReport(ctx));
+bot.action('u_report', (ctx) => renderStudentReport(ctx));
+
+const triggerMistakeRevision = async (ctx: any) => {
+  const uid = ctx.from.id;
+  const qRes = await pool.query(
+    'SELECT q.* FROM questions q INNER JOIN user_mistakes um ON q.id = um.question_id WHERE um.user_id = $1 ORDER BY um.wrong_at DESC LIMIT 5',
+    [uid]
+  ).catch(() => ({ rows: [] }));
+
+  if (qRes.rows.length === 0) {
+    const emptyMsg = '🎉 *शानदार! आपकी Mistake Notebook खाली है।*\nजब भी लाइव टेस्ट में आपका कोई सवाल गलत होगा, वह अपने आप यहाँ रिवीजन के लिए सेव हो जाएगा!';
+    if (ctx.callbackQuery) {
+      await ctx.answerCbQuery('No pending mistakes!');
+      return safeEdit(ctx, emptyMsg, Markup.inlineKeyboard([[Markup.button.callback('⚡ Start Solo Practice', 'u_practice')], [Markup.button.callback('🔙 Main Menu', 'u_home')]]));
+    }
+    return safeSend(ctx.chat.id, emptyMsg);
+  }
+
+  if (ctx.callbackQuery) await ctx.answerCbQuery('Sending your Mistake Revision Polls...');
+  await safeSend(ctx.chat.id, '📓 *MISTAKE NOTEBOOK REVISION (' + qRes.rows.length + ' Questions)*\n*निर्देश:* यदि आप अब इनका सही उत्तर देंगे, तो ये आपकी Mistake लिस्ट से अपने आप हट जाएंगे:');
+
+  for (const q of qRes.rows) {
+    const opts = [q.option_a.substring(0, 95), q.option_b.substring(0, 95), q.option_c.substring(0, 95), q.option_d.substring(0, 95)];
+    const cIdx = ['A', 'B', 'C', 'D'].indexOf((q.correct_option || 'A').toUpperCase().charAt(0));
+    const finalIdx = cIdx !== -1 ? cIdx : 0;
+    const sent = await sendQuizSafe(ctx.chat.id, ('📓 [Mistake Review - ' + q.subject + ']\n' + q.question_text).substring(0, 295), opts, finalIdx, '💡 ' + (q.explanation || '').substring(0, 185), 35);
+    if (sent?.poll?.id) {
+      await pool.query('INSERT INTO poll_tracking(poll_id, chat_id, question_id, correct_index) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING', [sent.poll.id, ctx.chat.id, q.id, finalIdx]).catch(() => {});
+    }
+    await sleep(600);
+  }
+};
+
+bot.command('mistakes', (ctx) => triggerMistakeRevision(ctx));
+bot.action('u_mistakes', (ctx) => triggerMistakeRevision(ctx));
+
+const renderSoloPracticeMenu = async (ctx: any) => {
+  const coreSubs = SCHEDULE_15H.slice(0, 13);
+  const kb: any[][] = [];
+  for (let i = 0; i < coreSubs.length; i += 2) {
+    const row = [Markup.button.callback('⚡ ' + coreSubs[i], 'solo_' + coreSubs[i])];
+    if (coreSubs[i + 1]) row.push(Markup.button.callback('⚡ ' + coreSubs[i + 1], 'solo_' + coreSubs[i + 1]));
+    kb.push(row);
+  }
+  kb.push([Markup.button.callback('🔙 Back to Main Menu', 'u_home')]);
+  const txt = '⚡ *SOLO RAPID-FIRE PRACTICE (DM MODE)*\nकिसी भी विषय पर क्लिक करें और तुरंत अपने चैट में 5 महत्वपूर्ण सवालों का टेस्ट दें:';
+  if (ctx.callbackQuery) return safeEdit(ctx, txt, Markup.inlineKeyboard(kb));
+  return safeSend(ctx.chat.id, txt, Markup.inlineKeyboard(kb));
+};
+
+bot.command('practice', (ctx) => renderSoloPracticeMenu(ctx));
+bot.action('u_practice', (ctx) => renderSoloPracticeMenu(ctx));
+
+bot.action(/^solo_(.+)$/, async (ctx) => {
+  const sub = ctx.match[1];
+  await ctx.answerCbQuery('Launching 5 Rapid Polls for ' + sub + '...');
+  const qRes = await pool.query('SELECT * FROM questions WHERE subject=$1 ORDER BY RANDOM() LIMIT 5', [sub]).catch(() => ({ rows: [] }));
+  if (qRes.rows.length === 0) {
+    isSeedingNow = false;
+    await generateQuestionsBatch(sub);
+    return safeSend(ctx.chat.id, '⏳ *' + sub + '* के नए सवाल तैयार हो रहे हैं, कृपया 15 सेकंड बाद दोबारा क्लिक करें।');
+  }
+  await safeSend(ctx.chat.id, '⚡ *SOLO PRACTICE: ' + sub + ' (5 Rapid Questions)*');
+  for (let i = 0; i < qRes.rows.length; i++) {
+    const q = qRes.rows[i];
+    const opts = [q.option_a.substring(0, 95), q.option_b.substring(0, 95), q.option_c.substring(0, 95), q.option_d.substring(0, 95)];
+    const cIdx = ['A', 'B', 'C', 'D'].indexOf((q.correct_option || 'A').toUpperCase().charAt(0));
+    const finalIdx = cIdx !== -1 ? cIdx : 0;
+    const sent = await sendQuizSafe(ctx.chat.id, ('⚡ Q.' + (i + 1) + '/5 [' + (q.topic || sub) + ']\n' + q.question_text).substring(0, 295), opts, finalIdx, '💡 ' + (q.explanation || '').substring(0, 185), 30);
+    if (sent?.poll?.id) {
+      await pool.query('INSERT INTO poll_tracking(poll_id, chat_id, question_id, correct_index) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING', [sent.poll.id, ctx.chat.id, q.id, finalIdx]).catch(() => {});
+    }
+    await sleep(700);
+  }
+});
+
+// =========================================================
+// USER INTERFACE & FREEMIUM PDF MENU
 // =========================================================
 const renderMainMenu = async (ctx: any) => {
   const botUser = ctx.botInfo?.username || '';
   const giftTag = await getCfg('gift_tagline');
   const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
   const text =
-    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V6.7)*\n' +
+    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V8.0 Pro)*\n' +
     '• ⏰ *Live Time:* 8:00 AM – 11:00 PM (15 Hours Daily)\n' +
-    '• 📚 *Syllabus:* Topic-Wise Complete Exam Coverage + PYQs\n' +
-    '• ⚖️ *Marking:* +1.00 Right | -0.25 Wrong (1/4 Negative)\n' +
-    '• 📄 *Offline Paper:* A4 Printable Question Paper + OMR (10 ⭐)\n' +
+    '• 📓 *Smart Features:* Mistake Notebook + Solo Practice + Report Card\n' +
+    '• 🎁 *Freemium Offer:* 1st A4 PDF Paper *FREE* | Groups *30-Day FREE Trial*\n' +
     '• 💰 *Refer & Earn:* ₹5/Refer (Min Withdraw ₹99 via UPI)\n\n' + giftTag;
 
   const kb: any[][] = [
+    [Markup.button.callback('⚡ Solo Practice (DM)', 'u_practice'), Markup.button.callback('📓 My Mistake Book', 'u_mistakes')],
+    [Markup.button.callback('📊 My Report Card', 'u_report'), Markup.button.callback('📄 A4 Test Paper (1st FREE)', 'u_pdf_menu')],
     [Markup.button.callback('🎯 Exam & Subject Alerts', 'u_prefs'), Markup.button.callback('📅 15-Hour Schedule', 'u_sched')],
-    [Markup.button.callback('📄 Download A4 Test Paper (10 ⭐)', 'u_pdf_menu'), Markup.button.callback('🏆 Monthly Top 10', 'u_monthly')],
-    [Markup.button.callback('💰 Refer & Earn (₹5/Refer)', 'u_refer'), Markup.button.callback('⚙️ My Groups & Channels', 'u_groups')],
+    [Markup.button.callback('🏆 Monthly Top 10', 'u_monthly'), Markup.button.callback('💰 Refer & Earn (₹5)', 'u_refer')],
+    [Markup.button.callback('⚙️ My Groups (30d Free Trial)', 'u_groups')],
     [
-      Markup.button.url('➕ Add to Group (1-Click)', 'https://t.me/' + botUser + '?startgroup=true&admin=' + adminPerms),
-      Markup.button.url('📢 Add to Channel (1-Click)', 'https://t.me/' + botUser + '?startchannel=true&admin=' + adminPerms)
+      Markup.button.url('➕ Add to Group (30d Free)', 'https://t.me/' + botUser + '?startgroup=true&admin=' + adminPerms),
+      Markup.button.url('📢 Add to Channel (30d Free)', 'https://t.me/' + botUser + '?startchannel=true&admin=' + adminPerms)
     ]
   ];
   if (isMaster(ctx.from?.id)) kb.push([Markup.button.callback('👑 MASTER ADMIN PANEL (ONLY FOR ME) 👑', 'adm_home')]);
@@ -1299,20 +1493,24 @@ const renderMainMenu = async (ctx: any) => {
 };
 
 const renderPdfSubjectMenu = async (ctx: any) => {
+  const uid = ctx.from.id;
+  const uRes = await pool.query('SELECT free_pdf_used FROM users WHERE telegram_id=$1', [uid]).catch(() => ({ rows: [] }));
+  const freeAvailable = isMaster(uid) || !Boolean(uRes.rows[0]?.free_pdf_used);
+
   const coreSubs = SCHEDULE_15H.slice(0, 14);
   const kb: any[][] = [];
   for (let i = 0; i < coreSubs.length; i += 2) {
-    const row = [Markup.button.callback('📄 ' + coreSubs[i], 'buy_pdf_' + coreSubs[i])];
-    if (coreSubs[i + 1]) row.push(Markup.button.callback('📄 ' + coreSubs[i + 1], 'buy_pdf_' + coreSubs[i + 1]));
+    const tag = freeAvailable ? '🆓 ' : '📄 ';
+    const row = [Markup.button.callback(tag + coreSubs[i], 'buy_pdf_' + coreSubs[i])];
+    if (coreSubs[i + 1]) row.push(Markup.button.callback(tag + coreSubs[i + 1], 'buy_pdf_' + coreSubs[i + 1]));
     kb.push(row);
   }
   kb.push([Markup.button.callback('🔙 Back to Main Menu', 'u_home')]);
 
   const msg =
     '📄 *A4 PRINTABLE OFFLINE QUESTION PAPER MODEL*\n' +
-    '• कोचिंग व ऑफलाइन छात्रों को बांटने के लिए 50 प्रश्नों का 2-Column A4 पेपर\n' +
-    '• साथ में *50-Question OMR Sheet* और *Answer Key*\n' +
-    '• शुल्क: केवल *10 Telegram Stars* (PDF न खुलने पर Editable Text + Admin Support मुफ्त!)\n\n' +
+    '• 50 प्रश्नों का 2-Column A4 पेपर + *OMR Sheet* + *Answer Key*\n' +
+    '• 🎁 *आपका स्टेटस:* ' + (freeAvailable ? '*1st Download 100% FREE 🟢*' : '*Free Quota Used (10 Telegram Stars ⭐)*') + '\n\n' +
     '👇 *जिस विषय का A4 मॉडल पेपर चाहिए उसे चुनें:*';
 
   if (ctx.callbackQuery) return safeEdit(ctx, msg, Markup.inlineKeyboard(kb));
@@ -1324,12 +1522,25 @@ bot.action('u_pdf_menu', (ctx) => renderPdfSubjectMenu(ctx));
 
 bot.action(/^buy_pdf_(.+)$/, async (ctx) => {
   const sub = ctx.match[1];
-  if (isMaster(ctx.from.id)) {
+  const uid = ctx.from.id;
+  const destChat = ctx.chat?.id || uid;
+
+  if (isMaster(uid)) {
     await ctx.answerCbQuery('Admin Free Access: Generating A4 Paper...');
-    return deliverOfflineTestPaper(ctx.chat?.id || ctx.from.id, sub, false);
+    return deliverOfflineTestPaper(destChat, sub, false, false);
   }
-  await ctx.answerCbQuery('Sending 10 Stars Invoice...');
-  return sendPdfStarsInvoice(ctx.chat?.id || ctx.from.id, sub);
+
+  const uRes = await pool.query('SELECT free_pdf_used FROM users WHERE telegram_id=$1', [uid]).catch(() => ({ rows: [] }));
+  const alreadyUsed = Boolean(uRes.rows[0]?.free_pdf_used);
+
+  if (!alreadyUsed) {
+    await pool.query('UPDATE users SET free_pdf_used = TRUE WHERE telegram_id=$1', [uid]).catch(() => {});
+    await ctx.answerCbQuery('🎁 Unlocking Your 1st FREE A4 Model Paper!');
+    return deliverOfflineTestPaper(destChat, sub, false, true);
+  }
+
+  await ctx.answerCbQuery('Sending 10 Stars Invoice (1st Free Quota Used)...');
+  return sendPdfStarsInvoice(destChat, sub);
 });
 
 bot.start(async (ctx) => {
@@ -1349,7 +1560,7 @@ bot.start(async (ctx) => {
   if (!fsub.ok) {
     const btns: any[][] = fsub.missing.map(m => [Markup.button.url(m.title, m.link)]);
     btns.push([Markup.button.callback('✅ मैंने जॉइन कर लिया (Verify & Start)', 'verify_fsub')]);
-    return safeSend(ctx.chat.id, '🔒 *अनिवार्य सूचना:*\nप्रोफेसर बॉट के सभी फीचर्स अनलॉक करने के लिए कृपया नीचे दिए गए दोनों ऑफिशियल ग्रुप और चैनल को सब्सक्राइब करें:', Markup.inlineKeyboard(btns));
+    return safeSend(ctx.chat.id, '🔒 *अनिवार्य सूचना:*\nप्रोफेसर बॉट के सभी फीचर्स और 1st Free A4 PDF अनलॉक करने के लिए कृपया नीचे दिए गए दोनों ऑफिशियल ग्रुप और चैनल को जॉइन करें:', Markup.inlineKeyboard(btns));
   }
   await creditReferralIfEligible(uid);
   return renderMainMenu(ctx);
@@ -1380,7 +1591,7 @@ const renderReferPanel = async (ctx: any) => {
     '\n🔗 *Your Link:* ' + refLink;
 
   const kb: any[][] = [
-    [Markup.button.url('📲 Share Link on Telegram', 'https://t.me/share/url?url=' + encodeURIComponent(refLink) + '&text=' + encodeURIComponent('🎓 रोज़ 15 घंटे फ्री लाइव टेस्ट दें और ₹100 Gift Card जीतें:'))],
+    [Markup.button.url('📲 Share Link on Telegram', 'https://t.me/share/url?url=' + encodeURIComponent(refLink) + '&text=' + encodeURIComponent('🎓 रोज़ 15 घंटे फ्री लाइव टेस्ट दें, 1 Free A4 PDF पाएं और ₹100 Gift Card जीतें:'))],
     [Markup.button.callback('💸 Withdraw ₹99+ (Submit UPI)', 'u_withdraw')],
     [Markup.button.callback('🔙 Back', 'u_home')]
   ];
@@ -1466,6 +1677,9 @@ bot.action(/^setsub_(.+)$/, async (ctx) => {
 });
 bot.action('tog_alert', async (ctx) => { await pool.query('UPDATE users SET alerts_enabled = NOT alerts_enabled WHERE telegram_id=$1', [ctx.from.id]); return renderPrefs(ctx); });
 
+// =========================================================
+// GROUP MANAGEMENT (AUTO 30-DAY FREE TRIAL ON ADD)
+// =========================================================
 bot.on('my_chat_member', async (ctx) => {
   try {
     const st = ctx.myChatMember.new_chat_member.status;
@@ -1473,23 +1687,25 @@ bot.on('my_chat_member', async (ctx) => {
     const adder = ctx.myChatMember.from;
     if (['group', 'supergroup', 'channel'].includes(chat.type) && ['administrator', 'member'].includes(st)) {
       const chatTitle = chat.title || 'Educational Chat';
-      const approved = isMaster(adder.id) ? 'APPROVED' : 'PENDING';
-      await pool.query('INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,$2,$3,$4,TRUE,$5) ON CONFLICT(chat_id) DO UPDATE SET title=$2, chat_type=$3, is_active=TRUE', [chat.id, chatTitle, chat.type, adder.id, approved]);
+      await pool.query(
+        "INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status, trial_ends_at) VALUES($1,$2,$3,$4,TRUE,'APPROVED', NOW() + INTERVAL '30 days') ON CONFLICT(chat_id) DO UPDATE SET title=$2, chat_type=$3, is_active=TRUE",
+        [chat.id, chatTitle, chat.type, adder.id]
+      );
       await safeSend(
         chat.id,
         '🎓 *Professor AI Quiz Bot अब "' + chatTitle + '" से जुड़ चुका है!*\n' +
-        (approved === 'APPROVED' ? '✅ *Status: Active!*' : '⏳ *30-Day Free Trial Request Sent to Admin!*'),
+        '🎁 *30-Day Free Trial Activated!* (पसंद आने पर 30 दिन बाद 100 Stars/Year से रिन्यू करें)',
         Markup.inlineKeyboard([
           [Markup.button.callback('🙋‍♂️ Ready for Quiz (0/3)', 'ready_quiz_' + chat.id), Markup.button.callback('▶️ Start Live Quiz', 'gstart_' + chat.id)],
-          [Markup.button.callback('🛑 Stop Quiz', 'pause_test_' + chat.id)]
+          [Markup.button.callback('🛑 Stop Quiz (Admin)', 'pause_test_' + chat.id)]
         ])
       );
       if (ADMIN_ID && !isMaster(adder.id)) {
         await safeSend(
           ADMIN_ID,
-          '🔔 *New Group/Channel Added!*\n📌 *' + chatTitle + '* (' + chat.id + ')\n👤 By: ' + (adder.first_name || 'User') + ' (' + adder.id + ')',
+          '🔔 *New Group Added (30d Free Trial Active)!*\n📌 *' + chatTitle + '* (' + chat.id + ')\n👤 By: ' + (adder.first_name || 'User') + ' (' + adder.id + ')',
           Markup.inlineKeyboard([
-            [Markup.button.callback('✅ Approve 30d', 'adm_app_' + chat.id), Markup.button.callback('⭐ Grant 1 Yr', 'adm_yr_' + chat.id), Markup.button.callback('🚫 Block', 'adm_rej_' + chat.id)]
+            [Markup.button.callback('⭐ Grant 1 Yr Free', 'adm_yr_' + chat.id), Markup.button.callback('🚫 Block Group', 'adm_rej_' + chat.id)]
           ])
         );
       }
@@ -1502,7 +1718,7 @@ bot.action(/^adm_app_(-?\d+)$/, async (ctx) => {
   const cid = Number(ctx.match[1]);
   await pool.query("UPDATE channels SET approval_status='APPROVED', trial_ends_at = NOW() + INTERVAL '30 days', is_active=TRUE WHERE chat_id=$1", [cid]);
   await ctx.answerCbQuery('Approved 30d Trial!', { show_alert: true });
-  await safeSend(cid, '🎉 *मास्टर एडमिन ने आपके ग्रुप/चैनल का 30 दिनों का फ्री ट्रायल अप्रूव कर दिया है!*');
+  await safeSend(cid, '🎉 *मास्टर एडमिन ने आपके ग्रुप/चैनल का 30 दिनों का फ्री ट्रायल एक्टिवेट कर दिया है!*');
 });
 
 bot.action(/^adm_yr_(-?\d+)$/, async (ctx) => {
@@ -1525,14 +1741,16 @@ bot.command('setupgroup', async (ctx) => {
   if (ctx.chat.type === 'private') return ctx.reply('यह कमांड अपने ग्रुप या चैनल के अंदर लिखें।');
   const gChat: any = ctx.chat;
   const gTitle = gChat.title || 'Group';
-  const approved = isMaster(ctx.from.id) ? 'APPROVED' : 'PENDING';
-  await pool.query('INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,$2,$3,$4,TRUE,$5) ON CONFLICT(chat_id) DO UPDATE SET title=$2, owner_id=$4, is_active=TRUE', [ctx.chat.id, gTitle, ctx.chat.type, ctx.from.id, approved]);
+  await pool.query(
+    "INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status, trial_ends_at) VALUES($1,$2,$3,$4,TRUE,'APPROVED', NOW() + INTERVAL '30 days') ON CONFLICT(chat_id) DO UPDATE SET title=$2, owner_id=$4, is_active=TRUE",
+    [ctx.chat.id, gTitle, ctx.chat.type, ctx.from.id]
+  );
   return safeSend(
     ctx.chat.id,
-    '✅ *"' + gTitle + '" रजिस्टर हो गया है!*',
+    '✅ *"' + gTitle + '" रजिस्टर हो गया है (30-Day Free Trial Active)!*',
     Markup.inlineKeyboard([
       [Markup.button.callback('🙋‍♂️ Ready for Quiz (0/3)', 'ready_quiz_' + ctx.chat.id), Markup.button.callback('▶️ Start Test Now', 'gstart_' + ctx.chat.id)],
-      [Markup.button.callback('🛑 Stop Test', 'pause_test_' + ctx.chat.id)]
+      [Markup.button.callback('🛑 Stop Test (Admin)', 'pause_test_' + ctx.chat.id)]
     ])
   );
 });
@@ -1544,17 +1762,20 @@ bot.action('u_groups', async (ctx) => {
   if (r.rows.length === 0) {
     return safeEdit(
       ctx,
-      '📢 कोई ग्रुप/चैनल अभी रजिस्टर नहीं है। नीचे बटन दबाकर अपने ग्रुप का `@username` भेजें या मैसेज Forward करें:',
+      '📢 कोई ग्रुप/चैनल अभी रजिस्टर नहीं है। बॉट को अपने ग्रुप में Admin बनाएं (30 दिन फ्री ट्रायल तुरंत चालू हो जाएगा) या नीचे से लिंक करें:',
       Markup.inlineKeyboard([
         [Markup.button.callback('➕ Link Group / Channel', 'adm_add_grp')],
         [Markup.button.callback('🔙 Back', 'u_home')]
       ])
     );
   }
-  const kb: any[][] = r.rows.map(g => [Markup.button.callback((g.is_active ? '🟢 ' : '🔴 ') + g.title + ' [' + g.approval_status + ']', 'gpanel_' + g.chat_id)]);
-  kb.push([Markup.button.callback('➕ Link Another Group/Channel', 'adm_add_grp')]);
+  const kb: any[][] = r.rows.map(g => {
+    const p = isGroupAllowedToPost(g);
+    return [Markup.button.callback((g.is_active ? '🟢 ' : '🔴 ') + g.title + ' (' + p.daysLeft + 'd left)', 'gpanel_' + g.chat_id)];
+  });
+  if (isMaster(ctx.from.id)) kb.push([Markup.button.callback('➕ Link Another Group/Channel', 'adm_add_grp')]);
   kb.push([Markup.button.callback('🔙 Back', 'u_home')]);
-  return safeEdit(ctx, '⚙️ *ग्रुप / चैनल चुनें:*', Markup.inlineKeyboard(kb));
+  return safeEdit(ctx, '⚙️ *ग्रुप / चैनल चुनें (30-Day Free Trial + Pro Status):*', Markup.inlineKeyboard(kb));
 });
 
 const renderGroupPanel = async (ctx: any, chatId: number) => {
@@ -1565,17 +1786,17 @@ const renderGroupPanel = async (ctx: any, chatId: number) => {
 
   const txt =
     '⚙️ *Group Panel: ' + g.title + '*\n• 🆔 ID: ' + g.chat_id + ' | 👤 Owner: ' + (g.owner_id || 'N/A') + '\n' +
-    '• 📡 Schedule: *' + (g.is_active ? 'ON 🟢' : 'OFF 🔴') + '* | 🛡 Status: *' + g.approval_status + '*\n' +
-    '• 💳 Plan: *' + (perm.ok ? 'ACTIVE ✅' : 'LOCKED ❌') + '*\n' +
+    '• 📡 Schedule: *' + (g.is_active ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
+    '• 🎁 Plan Status: *' + (perm.ok ? perm.reason + ' (' + perm.daysLeft + ' Days Left) ✅' : 'TRIAL EXPIRED ❌') + '*\n' +
     '• ✍️ Header: *' + (g.custom_caption || 'Default') + '*';
 
   const kb: any[][] = [
     [Markup.button.callback('▶️ Start Test Now', 'gstart_' + chatId), Markup.button.callback('🛑 Stop Test', 'pause_test_' + chatId)],
     [Markup.button.callback(g.is_active ? '🔕 Schedule OFF' : '🔔 Schedule ON', 'gtog_' + chatId), Markup.button.callback('✍️ Custom Header', 'gcap_' + chatId)],
-    [Markup.button.callback('⭐ Pay 100 Stars (1 Year Auto)', 'gpay_' + chatId)]
+    [Markup.button.callback('⭐ Upgrade 1 Year Pro (100 Stars)', 'gpay_' + chatId)]
   ];
   if (isMaster(ctx.from.id)) {
-    kb.push([Markup.button.callback('✅ Approve 30d', 'adm_app_' + chatId), Markup.button.callback('⭐ Grant 1 Yr', 'adm_yr_' + chatId), Markup.button.callback('🚫 Block', 'adm_rej_' + chatId)]);
+    kb.push([Markup.button.callback('✅ +30d Trial', 'adm_app_' + chatId), Markup.button.callback('⭐ +1 Yr Free', 'adm_yr_' + chatId), Markup.button.callback('🚫 Block', 'adm_rej_' + chatId)]);
   }
   kb.push([Markup.button.callback('🔙 Back', 'u_groups')]);
   return safeEdit(ctx, txt, Markup.inlineKeyboard(kb));
@@ -1589,24 +1810,34 @@ bot.action(/^gcap_(-?\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   return safeSend(ctx.chat.id, '✍️ *कस्टम लाइन लिखें (/cancel रद्द करने के लिए):*');
 });
-bot.action(/^gpay_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await ctx.answerCbQuery('Sending Invoice...'); return sendGroupStarsInvoice(ctx.chat?.id || ctx.from.id, cid); });
+bot.action(/^gpay_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await ctx.answerCbQuery('Sending 100 Stars Invoice...'); return sendGroupStarsInvoice(ctx.chat?.id || ctx.from.id, cid); });
 
 bot.action(/^gstart_(-?\d+)$/, async (ctx) => {
   const cid = Number(ctx.match[1]);
   const ist = new Date(Date.now() + 5.5 * 3600 * 1000);
   const sub = getSubjectForHour(ist.getUTCHours());
 
-  if (isMaster(ctx.from.id)) {
+  if (await isGroupAdminOrMaster(ctx, cid, ctx.from.id)) {
     await ctx.answerCbQuery('👑 Admin Instant Start: ' + sub + ' Test शुरू हो रहा है!');
     return startHourlySubjectTest(cid, sub, 0, true);
   }
+  await ctx.answerCbQuery('Joining 3-Player Ready Lobby...');
   return openThreePlayerLobby(cid, sub);
 });
 
-bot.action(/^pause_test_(-?\d+)$/, async (ctx) => { const cid = Number(ctx.match[1]); await stopTestInGroup(cid, true); await ctx.answerCbQuery('Test Paused!'); });
+// PROTECTED STOP BUTTON: Only Master Admin or Group Admins can pause a running test!
+bot.action(/^pause_test_(-?\d+)$/, async (ctx) => {
+  const cid = Number(ctx.match[1]);
+  const allowed = await isGroupAdminOrMaster(ctx, cid, ctx.from.id);
+  if (!allowed) {
+    return ctx.answerCbQuery('⚠️ केवल ग्रुप एडमिन या मास्टर एडमिन ही लाइव टेस्ट रोक सकते हैं!', { show_alert: true });
+  }
+  await stopTestInGroup(cid, true);
+  await ctx.answerCbQuery('⏸ Test Paused by Admin!');
+});
 
 // =========================================================
-// MASTER ADMIN PANEL (LIVE POSTGRESQL COUNTS & RECONNECT)
+// MASTER ADMIN PANEL (LIVE DB STATS, VACUUM & TURBO SEED)
 // =========================================================
 const renderAdmin = async (ctx: any) => {
   if (!isMaster(ctx.from?.id)) return ctx.reply('🔒 केवल बॉट मालिक के लिए। (ID: ' + ctx.from?.id + ')');
@@ -1631,16 +1862,16 @@ const renderAdmin = async (ctx: any) => {
   const facOn = await getCfg('factory_on');
 
   const txt =
-    '👑 *PROFESSOR MASTER ADMIN PANEL (V6.7)* 👑\n' +
+    '👑 *PROFESSOR MASTER ADMIN PANEL (V8.0 Pro)* 👑\n' +
     '• 🗄 *Database:* ' + dbStatusText + '\n' +
     '• 👥 *Users:* *' + uCnt + '* | 📢 *Active Groups:* *' + gCnt + '*\n' +
-    '• 📚 *PostgreSQL Question Bank:* *' + qCnt + '*\n' +
+    '• 📚 *Unique Question Bank:* *' + qCnt + '* (Zero-Duplicate Hash)\n' +
     '• 📡 *Seeder Status:* ' + lastSeedReport + '\n' +
     '• 👥 *3-User Ready Lobby:* *' + (minCheckOn ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
     '• 🔐 *2-Channel Force Sub:* *' + (fsubOn === 'true' ? 'ON 🟢' : 'OFF 🔴') + '*';
 
   const kb: any[][] = [
-    [Markup.button.callback('🔄 Check / Reconnect DB', 'adm_chk_db'), Markup.button.callback('⚡ Seed +15 Qs', 'adm_gen10'), Markup.button.callback('🚀 Turbo +45 Qs', 'adm_gen45')],
+    [Markup.button.callback('🔄 Check DB & Clean Garbage', 'adm_chk_db'), Markup.button.callback('⚡ Seed +15 Qs', 'adm_gen10'), Markup.button.callback('🚀 Turbo +45 Qs', 'adm_gen45')],
     [Markup.button.callback(minCheckOn ? '🔴 3-User Lobby: OFF' : '🟢 3-User Lobby: ON', 'adm_tog_min'), Markup.button.callback('➕ Link Group/Channel', 'adm_add_grp')],
     [Markup.button.callback('📌 Pin Custom Message in Groups', 'adm_bcpin'), Markup.button.callback('📢 Normal Broadcast', 'adm_bc')],
     [Markup.button.callback('🌙 Post Daily Close Report Now', 'adm_daily_rep'), Markup.button.callback('📄 Generate Free A4 PDF', 'u_pdf_menu')],
@@ -1659,9 +1890,10 @@ bot.action('adm_home', (ctx) => renderAdmin(ctx));
 
 bot.action('adm_chk_db', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Verifying PostgreSQL Connection & Tables...');
+  await ctx.answerCbQuery('Running DB Reconnect & Garbage Cleaner...');
   const ok = await initDB();
-  await safeSend(ctx.chat.id, ok ? '✅ *PostgreSQL डेटाबेस 100% कनेक्टेड और चालू है!*' : '❌ *डेटाबेस अभी भी पहुंच से बाहर है:* ' + dbStatusText);
+  await runDatabaseAutoCleaner();
+  await safeSend(ctx.chat.id, ok ? '✅ *PostgreSQL कनेक्टेड है और पुराना कचरा (Expired Polls/History) साफ कर दिया गया है!*' : '❌ *डेटाबेस एरर:* ' + dbStatusText);
   return renderAdmin(ctx);
 });
 
@@ -1694,17 +1926,17 @@ bot.action('adm_tog_fac', async (ctx) => { if (!isMaster(ctx.from.id)) return; c
 
 bot.action('adm_gen10', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Seeding 15 Verified Questions into PostgreSQL...');
+  await ctx.answerCbQuery('Seeding 15 Unique Questions...');
   isSeedingNow = false;
   const r = await generateQuestionsBatch();
-  await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए प्रश्न डेटाबेस में जुड़ गए!' : '❌ विफल: ' + r.error);
+  await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए (Zero-Duplicate) प्रश्न जुड़ गए!' : '⚠️ ' + r.error);
   return renderAdmin(ctx);
 });
 
 bot.action('adm_gen45', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Turbo Seeding +45 Questions...');
-  await safeSend(ctx.chat.id, '🚀 *Turbo Seeder चालू:* 3 अलग-अलग विषयों के +45 सवाल PostgreSQL में जोड़े जा रहे हैं...');
+  await ctx.answerCbQuery('Turbo Seeding +45 Unique Questions...');
+  await safeSend(ctx.chat.id, '🚀 *Turbo Seeder चालू:* 3 अलग-अलग विषयों के +45 यूनिक सवाल जोड़े जा रहे हैं...');
   (async () => {
     let totalAdded = 0;
     for (let i = 0; i < 3; i++) {
@@ -1713,7 +1945,7 @@ bot.action('adm_gen45', async (ctx) => {
       if (r.ok) totalAdded += r.count;
       await sleep(1000);
     }
-    await safeSend(ctx.chat.id, '🎉 *Turbo Seed Complete:* डेटाबेस में कुल *+' + totalAdded + '* नए प्रश्न जुड़ गए!');
+    await safeSend(ctx.chat.id, '🎉 *Turbo Seed Complete:* डेटाबेस में कुल *+' + totalAdded + '* नए यूनिक प्रश्न जुड़ गए!');
   })();
   return renderAdmin(ctx);
 });
@@ -1821,7 +2053,7 @@ bot.on('message', async (ctx) => {
       else if ('text' in ctx.message) targetId = ctx.message.text.trim();
       const chatInfo: any = await bot.telegram.getChat(targetId);
       await pool.query(
-        "INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status) VALUES($1,$2,$3,$4,TRUE,'APPROVED') ON CONFLICT(chat_id) DO UPDATE SET title=$2, is_active=TRUE, approval_status='APPROVED'",
+        "INSERT INTO channels(chat_id, title, chat_type, owner_id, is_active, approval_status, trial_ends_at) VALUES($1,$2,$3,$4,TRUE,'APPROVED', NOW() + INTERVAL '30 days') ON CONFLICT(chat_id) DO UPDATE SET title=$2, is_active=TRUE, approval_status='APPROVED'",
         [chatInfo.id, chatInfo.title || 'Quiz Group', chatInfo.type || 'supergroup', ctx.from.id]
       );
       await safeSend(ctx.chat.id, '✅ *"' + (chatInfo.title || chatInfo.id) + '" सीधे PostgreSQL डेटाबेस में जुड़ गया है!*');
@@ -1883,9 +2115,13 @@ bot.on('message', async (ctx) => {
 const launchBot = async () => {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-    setTimeout(() => { autoResumeOnServerBoot(); generateQuestionsBatch(); }, 3000);
+    setTimeout(() => {
+      runDatabaseAutoCleaner();
+      autoResumeOnServerBoot();
+      generateQuestionsBatch();
+    }, 3000);
     await bot.launch({ dropPendingUpdates: true });
-    console.log('Professor AI Quiz Bot V6.7 Successfully Launched!');
+    console.log('Professor AI Quiz Bot V8.0 Pro Successfully Launched!');
   } catch (e: any) {
     console.error('Polling Error:', e?.message);
     setTimeout(launchBot, 6000);
