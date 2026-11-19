@@ -27,16 +27,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
       - name: Install and Build
         run: npm install && npm run build
       - name: Run Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          ADMIN_ID: "7412791600"
+          ADMIN_ID: ${{ secrets.ADMIN_ID }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: timeout 19800s npm start || true
+        run: timeout --signal=SIGTERM --kill-after=15s 19800s npm start || true
       - name: Auto Restart Next Session
         if: always()
         env:
