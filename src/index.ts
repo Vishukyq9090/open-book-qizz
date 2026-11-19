@@ -10,7 +10,7 @@ dotenv.config();
 const PORT = Number(process.env.PORT) || 3000;
 const server = http.createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Professor AI Quiz Bot V9.1 Pro (Groq GPT-OSS Strict Seeder + Interactive Test Engine) Running 24/7!');
+  res.end('Professor AI Quiz Bot V9.2 Pro (Groq GPT-OSS Seeder + DB Schema Auto-Fix) Running 24/7!');
 }).listen(PORT);
 
 process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
@@ -136,7 +136,7 @@ let cachedGroqModels: { list: string[]; ts: number } | null = null;
 
 let isSeedingNow = false;
 let seedingStartedAt = 0;
-let lastSeedReport = '🟢 Groq V9.1 Seeder Active (Every 8m)';
+let lastSeedReport = '🟢 Groq V9.2 Seeder Active (Every 8m)';
 let modelRotationCursor = 0;
 let seedCursor = 0;
 let todaySeededCount = 0;
@@ -210,7 +210,7 @@ const getMonthKey = (): string => {
 };
 
 // =========================================================
-// DATABASE INITIALIZATION, SEQUENCE SYNC & AUTO-CLEANER
+// DATABASE INITIALIZATION, SCHEMA AUTO-FIX & SEQUENCE SYNC
 // =========================================================
 const syncQuestionsSequence = async () => {
   try {
@@ -242,8 +242,11 @@ const initDB = async (): Promise<boolean> => {
       "ALTER TABLE channels ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMP DEFAULT (NOW() + INTERVAL '30 days')",
       "ALTER TABLE channels ADD COLUMN IF NOT EXISTS sub_ends_at TIMESTAMP DEFAULT NULL",
       "ALTER TABLE channels ADD COLUMN IF NOT EXISTS checkpoints JSONB DEFAULT '{}'::jsonb",
-      "CREATE TABLE IF NOT EXISTS questions (id SERIAL PRIMARY KEY, subject TEXT, topic TEXT, question_text TEXT UNIQUE, q_hash TEXT UNIQUE, option_a TEXT, option_b TEXT, option_c TEXT, option_d TEXT, correct_option TEXT, explanation TEXT, difficulty TEXT DEFAULT 'Medium', is_pyq BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT NOW())",
+      "CREATE TABLE IF NOT EXISTS questions (id SERIAL PRIMARY KEY, subject TEXT, topic TEXT, exam_type TEXT DEFAULT 'All Exams', question_text TEXT UNIQUE, q_hash TEXT UNIQUE, option_a TEXT, option_b TEXT, option_c TEXT, option_d TEXT, correct_option TEXT, explanation TEXT, difficulty TEXT DEFAULT 'Medium', is_pyq BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT NOW())",
       "ALTER TABLE questions ADD COLUMN IF NOT EXISTS topic TEXT",
+      "ALTER TABLE questions ADD COLUMN IF NOT EXISTS exam_type TEXT DEFAULT 'All Exams'",
+      "ALTER TABLE questions ALTER COLUMN exam_type SET DEFAULT 'All Exams'",
+      "ALTER TABLE questions ALTER COLUMN exam_type DROP NOT NULL",
       "ALTER TABLE questions ADD COLUMN IF NOT EXISTS q_hash TEXT",
       "ALTER TABLE questions ADD COLUMN IF NOT EXISTS explanation TEXT",
       "ALTER TABLE questions ADD COLUMN IF NOT EXISTS difficulty TEXT DEFAULT 'Medium'",
@@ -267,9 +270,18 @@ const initDB = async (): Promise<boolean> => {
       "INSERT INTO bot_settings (key, value) VALUES ('fsub1_id', ''), ('fsub1_link', ''), ('fsub2_id', ''), ('fsub2_link', ''), ('fsub_enabled', 'false'), ('min_participants_enabled', 'true'), ('service_clean_enabled', 'true'), ('gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'), ('promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'), ('seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'), ('factory_on', 'true'), ('extra_ai_keys', '') ON CONFLICT (key) DO NOTHING"
     ];
     for (const q of queries) await pool.query(q).catch(() => {});
+
+    // Auto-relax any legacy NOT NULL columns on questions table that lack defaults
+    const legacyCols = await pool.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'questions' AND is_nullable = 'NO' AND column_default IS NULL AND column_name NOT IN ('id', 'subject', 'question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'correct_option')"
+    ).catch(() => ({ rows: [] }));
+    for (const col of legacyCols.rows) {
+      await pool.query(`ALTER TABLE questions ALTER COLUMN "${col.column_name}" DROP NOT NULL`).catch(() => {});
+    }
+
     await syncQuestionsSequence();
     dbStatusText = '🟢 PostgreSQL Connected & Active';
-    console.log('Professor V9.1 Pro PostgreSQL Database Ready & Sequence Synced!');
+    console.log('Professor V9.2 Pro PostgreSQL Database Ready & Schema Verified!');
     return true;
   } catch (e: any) {
     dbStatusText = '🔴 DB Connection Error: ' + escMd(String(e?.message || 'Check DATABASE URL')).substring(0, 45);
@@ -634,7 +646,7 @@ bot.action(/^adm_sendtxt_(\d+)_(.+)$/, async (ctx) => {
 });
 
 // =========================================================
-// GROQ-ONLY STRICT SCHEMA QUESTION SEEDER (V9.1 DIAGNOSTIC)
+// GROQ-ONLY STRICT SCHEMA QUESTION SEEDER (V9.2)
 // =========================================================
 const MCQ_JSON_SCHEMA = {
   type: 'object',
@@ -804,7 +816,6 @@ const normalizeCorrectOption = (rawAns: any, opts: [string, string, string, stri
   if (/^[(\[]?([ABCD])[)\].:\s]/i.test(upper)) return upper.match(/([ABCD])/)?.[1] || '';
   if (/^(OPTION\s*)?([ABCD])\b/i.test(upper)) return upper.match(/([ABCD])\b/)?.[1] || '';
   if (s === '0' || s === '1' || s === '2' || s === '3') return ['A', 'B', 'C', 'D'][Number(s)] || '';
-  // Match by option text if model returned the full answer string
   const idx = opts.findIndex(o => o.toLowerCase() === s.toLowerCase());
   if (idx !== -1) return ['A', 'B', 'C', 'D'][idx];
   const letterOnly = upper.replace(/[^ABCD]/g, '');
@@ -822,6 +833,7 @@ const saveQuestionsToDB = async (
   let dbError = '';
   let seqSyncedOnError = false;
   const batchSeenHashes = new Set<string>();
+  const examType = (EXAM_TARGET_MAP[subject] || 'All Competitive Exams').substring(0, 45);
 
   for (const q of arr) {
     if (!q || typeof q !== 'object') { skippedInvalid++; continue; }
@@ -856,9 +868,9 @@ const saveQuestionsToDB = async (
     const diff = DIFF_TIERS.includes(q.difficulty) ? q.difficulty : 'Medium';
 
     const insertSql =
-      'INSERT INTO questions (subject, topic, question_text, q_hash, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, is_pyq) ' +
-      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id';
-    const params = [subject, topic, qText, qHash, optA, optB, optC, optD, cOpt, exp, diff, Boolean(q.is_pyq)];
+      'INSERT INTO questions (subject, topic, exam_type, question_text, q_hash, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, is_pyq) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id';
+    const params = [subject, topic, examType, qText, qHash, optA, optB, optC, optD, cOpt, exp, diff, Boolean(q.is_pyq)];
 
     try {
       const res = await pool.query(insertSql, params);
@@ -1023,7 +1035,6 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             isGptOss ? 'strict_schema' : 'json_object'
           );
 
-          // Fallback to plain JSON prompt if strict schema or json_object rejected with 400
           if (!resp.ok && resp.status === 400) {
             console.warn(`[SEEDER] ${shortModel} HTTP 400 (${resp.data?.error?.message || ''}), retrying plain mode...`);
             resp = await callGroqChatCompletion(gKey, mName, systemPrompt, userPrompt, 'none');
@@ -1809,7 +1820,7 @@ const renderMainMenu = async (ctx: any) => {
   const giftTag = await getCfg('gift_tagline');
   const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
   const text =
-    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V9.1 Pro)*\n' +
+    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V9.2 Pro)*\n' +
     '• ⏰ *Live Time:* 8:00 AM – 11:00 PM (15 Hours Daily)\n' +
     '• ⚡ *Smart Test Mode:* 1-by-1 Solo Quiz + Mistake Notebook + Report Card\n' +
     '• 🎁 *Freemium Offer:* 1st A4 PDF Paper *FREE* | Groups *30-Day FREE Trial*\n' +
@@ -2200,7 +2211,7 @@ const renderAdmin = async (ctx: any) => {
   const groqKeys = await collectGroqKeys();
 
   const txt =
-    '👑 *PROFESSOR MASTER ADMIN PANEL (V9.1 Pro)* 👑\n' +
+    '👑 *PROFESSOR MASTER ADMIN PANEL (V9.2 Pro)* 👑\n' +
     '• 🗄 *Database:* ' + dbStatusText + '\n' +
     '• ⚡ *Groq Engine:* ' + groqKeys.length + ' Active Key(s) | GPT-OSS-20B / 120B / Llama-3.3\n' +
     '• 👥 *Users:* *' + uCnt + '* | 📢 *Active Groups:* *' + gCnt + '*\n' +
@@ -2275,12 +2286,12 @@ bot.action('adm_set_keys', async (ctx) => {
 
 bot.action('adm_chk_db', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Syncing DB Sequence & Resetting Groq Cooldowns...');
+  await ctx.answerCbQuery('Syncing DB Schema & Resetting Groq Cooldowns...');
   const ok = await initDB();
   await runDatabaseAutoCleaner();
   modelCooldownUntil.clear();
   cachedGroqModels = null;
-  await safeSend(ctx.chat.id, ok ? '✅ *PostgreSQL कनेक्टेड है, ID Sequence सिंक हो गई है, और सभी Groq मॉडल कूलडाउन रीसेट कर दिए गए हैं!*' : '❌ *डेटाबेस एरर:* ' + dbStatusText);
+  await safeSend(ctx.chat.id, ok ? '✅ *PostgreSQL कनेक्टेड है, Schema/Sequence सिंक हो गई है, और सभी Groq मॉडल कूलडाउन रीसेट कर दिए गए हैं!*' : '❌ *डेटाबेस एरर:* ' + dbStatusText);
   return renderAdmin(ctx);
 });
 
@@ -2539,7 +2550,7 @@ const launchBot = async () => {
     }, 3000);
 
     await bot.launch({ dropPendingUpdates: true });
-    console.log('Professor AI Quiz Bot V9.1 Pro Successfully Launched!');
+    console.log('Professor AI Quiz Bot V9.2 Pro Successfully Launched!');
   } catch (e: any) {
     console.error('Polling Error:', e?.message);
     setTimeout(launchBot, 6000);
