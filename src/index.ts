@@ -10,7 +10,7 @@ dotenv.config();
 const PORT = Number(process.env.PORT) || 3000;
 const server = http.createServer((_, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Professor AI Quiz Bot V9.0 Pro (Groq GPT-OSS Seeder + Interactive Test Engine) Running 24/7!');
+  res.end('Professor AI Quiz Bot V9.1 Pro (Groq GPT-OSS Strict Seeder + Interactive Test Engine) Running 24/7!');
 }).listen(PORT);
 
 process.on('uncaughtException', (e) => console.error('Uncaught Exception:', e));
@@ -124,8 +124,8 @@ const rateLimitMap = new Map<number, number>();
 const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
 const GROQ_PRIORITY_MODELS = [
   'openai/gpt-oss-20b',
-  'openai/gpt-oss-120b',
   'llama-3.3-70b-versatile',
+  'openai/gpt-oss-120b',
   'llama-3.1-8b-instant'
 ];
 const deadModels = new Set<string>([
@@ -136,7 +136,7 @@ let cachedGroqModels: { list: string[]; ts: number } | null = null;
 
 let isSeedingNow = false;
 let seedingStartedAt = 0;
-let lastSeedReport = '🟢 Groq V9 Seeder Active (Every 8m)';
+let lastSeedReport = '🟢 Groq V9.1 Seeder Active (Every 8m)';
 let modelRotationCursor = 0;
 let seedCursor = 0;
 let todaySeededCount = 0;
@@ -173,7 +173,7 @@ const clearTempGroupMessages = async (chatId: number) => {
   }
 };
 
-const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs: number = 30000) => {
+const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs: number = 35000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -210,8 +210,20 @@ const getMonthKey = (): string => {
 };
 
 // =========================================================
-// DATABASE INITIALIZATION, INDEXES & AUTO-CLEANER
+// DATABASE INITIALIZATION, SEQUENCE SYNC & AUTO-CLEANER
 // =========================================================
+const syncQuestionsSequence = async () => {
+  try {
+    const seqRes = await pool.query("SELECT pg_get_serial_sequence('questions', 'id') AS seq");
+    const seqName = seqRes.rows[0]?.seq;
+    if (seqName) {
+      await pool.query(`SELECT setval($1, COALESCE((SELECT MAX(id) FROM questions), 1), true)`, [seqName]);
+    }
+  } catch (e: any) {
+    console.error('[DB SEQ SYNC WARN]', e?.message);
+  }
+};
+
 const initDB = async (): Promise<boolean> => {
   try {
     await pool.query('SELECT 1');
@@ -233,9 +245,12 @@ const initDB = async (): Promise<boolean> => {
       "CREATE TABLE IF NOT EXISTS questions (id SERIAL PRIMARY KEY, subject TEXT, topic TEXT, question_text TEXT UNIQUE, q_hash TEXT UNIQUE, option_a TEXT, option_b TEXT, option_c TEXT, option_d TEXT, correct_option TEXT, explanation TEXT, difficulty TEXT DEFAULT 'Medium', is_pyq BOOLEAN DEFAULT FALSE, created_at TIMESTAMP DEFAULT NOW())",
       "ALTER TABLE questions ADD COLUMN IF NOT EXISTS topic TEXT",
       "ALTER TABLE questions ADD COLUMN IF NOT EXISTS q_hash TEXT",
+      "ALTER TABLE questions ADD COLUMN IF NOT EXISTS explanation TEXT",
+      "ALTER TABLE questions ADD COLUMN IF NOT EXISTS difficulty TEXT DEFAULT 'Medium'",
+      "ALTER TABLE questions ADD COLUMN IF NOT EXISTS is_pyq BOOLEAN DEFAULT FALSE",
+      "ALTER TABLE questions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()",
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_questions_q_hash ON questions(q_hash) WHERE q_hash IS NOT NULL",
       "CREATE INDEX IF NOT EXISTS idx_questions_sub_diff ON questions(subject, difficulty)",
-      "ALTER TABLE questions ADD COLUMN IF NOT EXISTS is_pyq BOOLEAN DEFAULT FALSE",
       "CREATE TABLE IF NOT EXISTS syllabus_progress (subject TEXT PRIMARY KEY, topic_index INT DEFAULT 0, cycles_completed INT DEFAULT 0)",
       "CREATE TABLE IF NOT EXISTS asked_history (chat_id BIGINT, question_id INT, asked_at TIMESTAMP DEFAULT NOW(), PRIMARY KEY (chat_id, question_id))",
       "ALTER TABLE asked_history ADD COLUMN IF NOT EXISTS asked_at TIMESTAMP DEFAULT NOW()",
@@ -252,11 +267,12 @@ const initDB = async (): Promise<boolean> => {
       "INSERT INTO bot_settings (key, value) VALUES ('fsub1_id', ''), ('fsub1_link', ''), ('fsub2_id', ''), ('fsub2_link', ''), ('fsub_enabled', 'false'), ('min_participants_enabled', 'true'), ('service_clean_enabled', 'true'), ('gift_tagline', '🎁 *विशेष घोषणा: 1 नवंबर से जो छात्र इस टेस्ट सीरीज़ में टॉप पर आएगा, उसे ₹100 का Gift Card इनाम में दिया जाएगा!*'), ('promo_msg', '💡 *Professor Bot Tip:* आप इस स्मार्ट क्विज़ बॉट को अपने ग्रुप या चैनल में जोड़कर छात्रों को इकट्ठा कर सकते हैं और अपना एजुकेशनल नेटवर्क तेजी से बढ़ा सकते हैं! (30 दिन बिल्कुल मुफ्त ट्रायल)'), ('seo_tags', '#UPSC #UPPSC #SSC #RailwayExams #LiveQuiz #TestSeries #DailyGK #ProfessorBot'), ('factory_on', 'true'), ('extra_ai_keys', '') ON CONFLICT (key) DO NOTHING"
     ];
     for (const q of queries) await pool.query(q).catch(() => {});
+    await syncQuestionsSequence();
     dbStatusText = '🟢 PostgreSQL Connected & Active';
-    console.log('Professor V9.0 Pro PostgreSQL Database Ready!');
+    console.log('Professor V9.1 Pro PostgreSQL Database Ready & Sequence Synced!');
     return true;
   } catch (e: any) {
-    dbStatusText = '🔴 DB Connection Error: ' + String(e?.message || 'Check DATABASE_URL').substring(0, 45);
+    dbStatusText = '🔴 DB Connection Error: ' + escMd(String(e?.message || 'Check DATABASE URL')).substring(0, 45);
     console.error(dbStatusText);
     return false;
   }
@@ -267,7 +283,6 @@ const runDatabaseAutoCleaner = async () => {
     await pool.query("DELETE FROM poll_tracking WHERE created_at < NOW() - INTERVAL '2 hours'").catch(() => {});
     await pool.query("DELETE FROM asked_history WHERE asked_at < NOW() - INTERVAL '15 days'").catch(() => {});
     await pool.query("DELETE FROM user_mistakes WHERE wrong_at < NOW() - INTERVAL '30 days'").catch(() => {});
-    // Safe backfill for any rows missing q_hash without triggering unique conflicts
     const missing = await pool.query('SELECT id, question_text FROM questions WHERE q_hash IS NULL LIMIT 200').catch(() => ({ rows: [] }));
     for (const row of missing.rows) {
       const h = makeQuestionHash(row.question_text);
@@ -275,6 +290,7 @@ const runDatabaseAutoCleaner = async () => {
         await pool.query('DELETE FROM questions WHERE id = $1', [row.id]).catch(() => {});
       });
     }
+    await syncQuestionsSequence();
     console.log('[AUTO-CLEANER] Old polls, expired history & duplicates cleaned!');
   } catch {}
 };
@@ -284,7 +300,7 @@ setInterval(async () => {
     await pool.query('SELECT 1');
     dbStatusText = '🟢 PostgreSQL Connected & Active';
   } catch (e: any) {
-    dbStatusText = '🔴 DB Disconnected (' + String(e?.message || '').substring(0, 35) + ')';
+    dbStatusText = '🔴 DB Disconnected (' + escMd(String(e?.message || '')).substring(0, 35) + ')';
   }
 }, 240000);
 
@@ -618,8 +634,35 @@ bot.action(/^adm_sendtxt_(\d+)_(.+)$/, async (ctx) => {
 });
 
 // =========================================================
-// GROQ-ONLY MULTI-KEY + MULTI-MODEL QUESTION SEEDER (V9.0)
+// GROQ-ONLY STRICT SCHEMA QUESTION SEEDER (V9.1 DIAGNOSTIC)
 // =========================================================
+const MCQ_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    questions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          question_text: { type: 'string' },
+          option_a: { type: 'string' },
+          option_b: { type: 'string' },
+          option_c: { type: 'string' },
+          option_d: { type: 'string' },
+          correct_option: { type: 'string', enum: ['A', 'B', 'C', 'D'] },
+          explanation: { type: 'string' },
+          difficulty: { type: 'string', enum: ['Easy', 'Medium', 'Hard', 'Ultra Hard', 'Max Hard'] },
+          is_pyq: { type: 'boolean' }
+        },
+        required: ['question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'correct_option', 'explanation', 'difficulty', 'is_pyq'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['questions'],
+  additionalProperties: false
+};
+
 const collectGroqKeys = async (): Promise<string[]> => {
   const extraDbKeys = await getCfg('extra_ai_keys');
   const rawTokens = [process.env.GROQ_API_KEY || '', extraDbKeys]
@@ -646,7 +689,6 @@ const getActiveGroqModels = async (gKey: string): Promise<string[]> => {
       const d: any = await r.json();
       if (d && Array.isArray(d.data)) {
         const availableSet = new Set<string>(d.data.map((m: any) => String(m.id || '')));
-        // Put verified priority models first (openai/gpt-oss-20b, openai/gpt-oss-120b, llama-3.3-70b, llama-3.1-8b)
         const prioritized = GROQ_PRIORITY_MODELS.filter(m => availableSet.has(m) && !deadModels.has(m));
         const extraSafe = Array.from(availableSet).filter((id: string) =>
           id &&
@@ -663,11 +705,16 @@ const getActiveGroqModels = async (gKey: string): Promise<string[]> => {
         const merged = [...prioritized, ...extraSafe];
         if (merged.length > 0) {
           cachedGroqModels = { list: merged, ts: Date.now() };
+          console.log('[SEEDER] Active Groq models:', merged.join(', '));
           return merged;
         }
       }
+    } else {
+      console.error(`[SEEDER] /models check HTTP ${r.status}`);
     }
-  } catch {}
+  } catch (e: any) {
+    console.error('[SEEDER] /models fetch error:', e?.message);
+  }
   return fallbackList;
 };
 
@@ -685,7 +732,6 @@ const getNextSubjectAndTopic = async (forcedSubject?: string): Promise<{ subject
       const c = countMap[s] || 0;
       if (c < minVal) { minVal = c; minSub = s; }
     }
-    // Always prioritize subjects with fewer than 150 questions, else alternate lowest & round-robin
     if (minSub && (minVal < 150 || seedCursor % 2 === 0)) {
       subject = minSub;
     }
@@ -713,7 +759,6 @@ const getNextSubjectAndTopic = async (forcedSubject?: string): Promise<{ subject
   return { subject, topic };
 };
 
-// Bulletproof JSON extractor with truncated-response salvage
 const parseAIQuestionsJson = (raw: string): any[] => {
   const cleaned = String(raw || '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
@@ -721,16 +766,15 @@ const parseAIQuestionsJson = (raw: string): any[] => {
     .replace(/```/g, '')
     .trim();
 
-  // 1. Direct JSON parse (works 99% of the time with response_format: json_object)
   try {
     const parsed = JSON.parse(cleaned);
     if (Array.isArray(parsed)) return parsed;
     if (parsed && Array.isArray(parsed.questions)) return parsed.questions;
     if (parsed && Array.isArray(parsed.mcqs)) return parsed.mcqs;
     if (parsed && Array.isArray(parsed.items)) return parsed.items;
+    if (parsed && Array.isArray(parsed.data)) return parsed.data;
   } catch {}
 
-  // 2. Substring extraction fallback
   try {
     const firstBracket = cleaned.indexOf('[');
     const lastBracket = cleaned.lastIndexOf(']');
@@ -740,54 +784,108 @@ const parseAIQuestionsJson = (raw: string): any[] => {
     }
   } catch {}
 
-  // 3. Salvage individual complete JSON objects if output was cut off mid-stream
   const salvaged: any[] = [];
-  const objRegex = /\{[^{}]*"question_text"[^{}]*"correct_option"[^{}]*\}/g;
+  const objRegex = /\{[^{}]*"question(?:_text)?"[^{}]*\}/g;
   const matches = cleaned.match(objRegex) || [];
   for (const m of matches) {
     try {
       const obj = JSON.parse(m);
-      if (obj && obj.question_text) salvaged.push(obj);
+      if (obj && (obj.question_text || obj.question)) salvaged.push(obj);
     } catch {}
   }
   return salvaged;
 };
 
-const saveQuestionsToDB = async (arr: any[], subject: string, topic: string): Promise<number> => {
+const normalizeCorrectOption = (rawAns: any, opts: [string, string, string, string]): string => {
+  const s = String(rawAns ?? '').trim();
+  if (!s) return '';
+  const upper = s.toUpperCase();
+  if (['A', 'B', 'C', 'D'].includes(upper)) return upper;
+  if (/^[(\[]?([ABCD])[)\].:\s]/i.test(upper)) return upper.match(/([ABCD])/)?.[1] || '';
+  if (/^(OPTION\s*)?([ABCD])\b/i.test(upper)) return upper.match(/([ABCD])\b/)?.[1] || '';
+  if (s === '0' || s === '1' || s === '2' || s === '3') return ['A', 'B', 'C', 'D'][Number(s)] || '';
+  // Match by option text if model returned the full answer string
+  const idx = opts.findIndex(o => o.toLowerCase() === s.toLowerCase());
+  if (idx !== -1) return ['A', 'B', 'C', 'D'][idx];
+  const letterOnly = upper.replace(/[^ABCD]/g, '');
+  return letterOnly.length === 1 ? letterOnly : '';
+};
+
+const saveQuestionsToDB = async (
+  arr: any[],
+  subject: string,
+  topic: string
+): Promise<{ saved: number; skippedInvalid: number; skippedDup: number; dbError: string }> => {
   let saved = 0;
+  let skippedInvalid = 0;
+  let skippedDup = 0;
+  let dbError = '';
+  let seqSyncedOnError = false;
   const batchSeenHashes = new Set<string>();
 
   for (const q of arr) {
-    if (!q || !q.question_text || !q.option_a || !q.option_b || !q.option_c || !q.option_d || !q.correct_option) continue;
+    if (!q || typeof q !== 'object') { skippedInvalid++; continue; }
 
-    const qText = String(q.question_text).replace(/\s+/g, ' ').trim().substring(0, 230);
-    if (qText.length < 12) continue;
+    const rawQ = q.question_text || q.question || q.q || '';
+    const optArr = Array.isArray(q.options) ? q.options : [];
+    const rawA = q.option_a ?? q.a ?? optArr[0] ?? '';
+    const rawB = q.option_b ?? q.b ?? optArr[1] ?? '';
+    const rawC = q.option_c ?? q.c ?? optArr[2] ?? '';
+    const rawD = q.option_d ?? q.d ?? optArr[3] ?? '';
+    const rawAns = q.correct_option ?? q.answer ?? q.correct_answer ?? q.correct ?? '';
 
-    const optA = String(q.option_a).replace(/\s+/g, ' ').trim().substring(0, 95);
-    const optB = String(q.option_b).replace(/\s+/g, ' ').trim().substring(0, 95);
-    const optC = String(q.option_c).replace(/\s+/g, ' ').trim().substring(0, 95);
-    const optD = String(q.option_d).replace(/\s+/g, ' ').trim().substring(0, 95);
+    const qText = String(rawQ).replace(/\s+/g, ' ').trim().substring(0, 230);
+    const optA = String(rawA).replace(/\s+/g, ' ').trim().substring(0, 95);
+    const optB = String(rawB).replace(/\s+/g, ' ').trim().substring(0, 95);
+    const optC = String(rawC).replace(/\s+/g, ' ').trim().substring(0, 95);
+    const optD = String(rawD).replace(/\s+/g, ' ').trim().substring(0, 95);
 
-    // Reject invalid or duplicate options
+    if (qText.length < 10 || !optA || !optB || !optC || !optD) { skippedInvalid++; continue; }
+
     const uniqueOpts = new Set([optA.toLowerCase(), optB.toLowerCase(), optC.toLowerCase(), optD.toLowerCase()]);
-    if (uniqueOpts.size < 4) continue;
+    if (uniqueOpts.size < 4) { skippedInvalid++; continue; }
 
-    const cOpt = String(q.correct_option).trim().toUpperCase().replace(/[^ABCD]/g, '').charAt(0);
-    if (!['A', 'B', 'C', 'D'].includes(cOpt)) continue;
+    const cOpt = normalizeCorrectOption(rawAns, [optA, optB, optC, optD]);
+    if (!['A', 'B', 'C', 'D'].includes(cOpt)) { skippedInvalid++; continue; }
 
     const qHash = makeQuestionHash(qText);
-    if (batchSeenHashes.has(qHash)) continue;
+    if (batchSeenHashes.has(qHash)) { skippedDup++; continue; }
     batchSeenHashes.add(qHash);
 
     const exp = String(q.explanation || 'NCERT एवं आयोग की आधिकारिक उत्तर-कुंजी द्वारा सत्यापित।').replace(/\s+/g, ' ').trim().substring(0, 180);
     const diff = DIFF_TIERS.includes(q.difficulty) ? q.difficulty : 'Medium';
 
-    const res = await pool.query(
-      'INSERT INTO questions (subject, topic, question_text, q_hash, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, is_pyq) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT DO NOTHING RETURNING id',
-      [subject, topic, qText, qHash, optA, optB, optC, optD, cOpt, exp, diff, Boolean(q.is_pyq)]
-    ).catch(() => ({ rowCount: 0 }));
+    const insertSql =
+      'INSERT INTO questions (subject, topic, question_text, q_hash, option_a, option_b, option_c, option_d, correct_option, explanation, difficulty, is_pyq) ' +
+      'VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id';
+    const params = [subject, topic, qText, qHash, optA, optB, optC, optD, cOpt, exp, diff, Boolean(q.is_pyq)];
 
-    if (res && res.rowCount && res.rowCount > 0) saved++;
+    try {
+      const res = await pool.query(insertSql, params);
+      if (res && res.rowCount && res.rowCount > 0) saved++;
+    } catch (err: any) {
+      const code = String(err?.code || '');
+      const constraint = String(err?.constraint || '').toLowerCase();
+      if (code === '23505') {
+        if (constraint.includes('pkey') && !seqSyncedOnError) {
+          seqSyncedOnError = true;
+          await syncQuestionsSequence();
+          try {
+            const retryRes = await pool.query(insertSql, params);
+            if (retryRes && retryRes.rowCount && retryRes.rowCount > 0) { saved++; continue; }
+          } catch (retryErr: any) {
+            if (String(retryErr?.code) === '23505') { skippedDup++; continue; }
+            dbError = `${retryErr?.code || 'DB'}: ${String(retryErr?.message || '').substring(0, 55)}`;
+            console.error('[DB INSERT RETRY ERROR]', retryErr?.message);
+          }
+        } else {
+          skippedDup++;
+        }
+      } else {
+        dbError = `${code || 'DB'}: ${String(err?.message || '').substring(0, 55)}`;
+        console.error('[DB INSERT ERROR]', code, err?.message);
+      }
+    }
   }
 
   const dKey = getTodayKey();
@@ -796,7 +894,7 @@ const saveQuestionsToDB = async (arr: any[], subject: string, topic: string): Pr
     todaySeededCount = 0;
   }
   todaySeededCount += saved;
-  return saved;
+  return { saved, skippedInvalid, skippedDup, dbError };
 };
 
 const callGroqChatCompletion = async (
@@ -804,7 +902,7 @@ const callGroqChatCompletion = async (
   model: string,
   systemPrompt: string,
   userPrompt: string,
-  useStructured: boolean = true
+  formatMode: 'strict_schema' | 'json_object' | 'none'
 ) => {
   const isGptOss = model.startsWith('openai/gpt-oss');
   const body: Record<string, any> = {
@@ -814,12 +912,22 @@ const callGroqChatCompletion = async (
       { role: 'user', content: userPrompt }
     ],
     temperature: 0.7,
-    max_completion_tokens: 4500
+    max_completion_tokens: isGptOss ? 6000 : 4500
   };
 
-  if (useStructured) {
+  if (formatMode === 'strict_schema' && isGptOss) {
+    body.response_format = {
+      type: 'json_schema',
+      json_schema: {
+        name: 'mcq_batch',
+        strict: true,
+        schema: MCQ_JSON_SCHEMA
+      }
+    };
+  } else if (formatMode === 'json_object') {
     body.response_format = { type: 'json_object' };
   }
+
   if (isGptOss) {
     body.reasoning_effort = 'low';
   }
@@ -831,7 +939,7 @@ const callGroqChatCompletion = async (
       'Authorization': `Bearer ${gKey}`
     },
     body: JSON.stringify(body)
-  }, 32000);
+  }, 38000);
 
   const retryAfterSec = Number(r.headers.get('retry-after') || 0);
   const data: any = await r.json().catch(() => ({}));
@@ -839,7 +947,7 @@ const callGroqChatCompletion = async (
 };
 
 const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean; count: number; sub: string; topic: string; provider: string; error?: string }> => {
-  if (isSeedingNow && (Date.now() - seedingStartedAt > 75000)) isSeedingNow = false;
+  if (isSeedingNow && (Date.now() - seedingStartedAt > 80000)) isSeedingNow = false;
   if (isSeedingNow && !forcedSub) return { ok: false, count: 0, sub: 'BUSY', topic: '', provider: 'NONE' };
   if ((await getCfg('factory_on')) === 'false' && !forcedSub) return { ok: false, count: 0, sub: 'PAUSED', topic: '', provider: 'NONE' };
 
@@ -849,16 +957,17 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
   try {
     const groqKeys = await collectGroqKeys();
     if (groqKeys.length === 0) {
-      const msg = '❌ GROQ_API_KEY नहीं मिली! GitHub Secrets या Admin Panel से gsk_... key जोड़ें।';
+      const msg = '❌ GROQ API KEY नहीं मिली! GitHub Secrets या Admin Panel से gsk Key जोड़ें।';
       lastSeedReport = msg;
+      console.error('[SEEDER]', msg);
       return { ok: false, count: 0, sub: 'NO_KEY', topic: '', provider: 'NONE', error: msg };
     }
 
     const { subject, topic } = await getNextSubjectAndTopic(forcedSub);
     const examTarget = EXAM_TARGET_MAP[subject] || 'UPSC, UPPSC, SSC, Railway';
     const langInstruction = subject === 'ENGLISH'
-      ? 'Language: Standard Exam English only.'
-      : 'Language: Pure, clear Hindi (Devanagari script). Use English technical terms in brackets only if helpful.';
+      ? 'Language: Standard Competitive Exam English only.'
+      : 'Language: Pure, clear Hindi (Devanagari script). Keep technical terms in English brackets only if helpful.';
 
     const recentRes = await pool.query(
       'SELECT option_a, option_b, option_c, option_d, correct_option FROM questions WHERE subject=$1 AND topic=$2 ORDER BY id DESC LIMIT 8',
@@ -872,16 +981,16 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
 
     const systemPrompt =
       'You are an expert Indian Competitive Exam Question Setter (UPSC/UPPSC/SSC/Railway). ' +
-      'Always respond with a strictly valid JSON object containing a single key "questions" whose value is an array of 10 unique MCQ objects.';
+      'Respond strictly with a valid JSON object having a single key "questions" containing an array of 10 unique MCQ objects.';
 
     const userPrompt = [
-      `Generate 10 high-accuracy, NCERT-verified MCQs for ${examTarget}.`,
+      `Generate 10 fresh, unique, NCERT-verified MCQs for ${examTarget}.`,
       `Subject: ${subject} | Topic: ${topic}`,
       langInstruction,
-      usedAnswers ? `Do NOT repeat questions whose answers are: [${usedAnswers}].` : '',
-      'Include 2 Easy, 3 Medium, 2 Hard, 2 Ultra Hard, 1 Max Hard. Mark 3-4 as real PYQs (is_pyq: true) with [Exam Year] in question_text.',
-      'Keep question_text under 200 chars, each option under 80 chars, explanation under 160 chars.',
-      'Return ONLY valid JSON: {"questions":[{"question_text":"...","option_a":"...","option_b":"...","option_c":"...","option_d":"...","correct_option":"A","explanation":"...","difficulty":"Medium","is_pyq":false}]}'
+      usedAnswers ? `Avoid repeating answers already used: [${usedAnswers}].` : '',
+      'Mix difficulties: 2 Easy, 3 Medium, 2 Hard, 2 Ultra Hard, 1 Max Hard. Mark 3-4 as real PYQs (is_pyq: true) with [Exam Year] tag.',
+      'Limits: question_text <= 200 chars, each option <= 80 chars, explanation <= 160 chars, all 4 options distinct.',
+      'JSON format: {"questions":[{"question_text":"...","option_a":"...","option_b":"...","option_c":"...","option_d":"...","correct_option":"A","explanation":"...","difficulty":"Medium","is_pyq":false}]}'
     ].filter(Boolean).join('\n');
 
     let rateLimitedHits = 0;
@@ -902,22 +1011,32 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
           continue;
         }
 
-        try {
-          let resp = await callGroqChatCompletion(gKey, mName, systemPrompt, userPrompt, true);
+        const shortModel = mName.split('/').pop() || mName;
+        const isGptOss = mName.startsWith('openai/gpt-oss');
 
-          // Retry once without json_object if model rejected JSON mode formatting
-          if (!resp.ok && resp.status === 400 && String(resp.data?.error?.message || '').toLowerCase().includes('json')) {
-            resp = await callGroqChatCompletion(gKey, mName, systemPrompt, userPrompt, false);
+        try {
+          let resp = await callGroqChatCompletion(
+            gKey,
+            mName,
+            systemPrompt,
+            userPrompt,
+            isGptOss ? 'strict_schema' : 'json_object'
+          );
+
+          // Fallback to plain JSON prompt if strict schema or json_object rejected with 400
+          if (!resp.ok && resp.status === 400) {
+            console.warn(`[SEEDER] ${shortModel} HTTP 400 (${resp.data?.error?.message || ''}), retrying plain mode...`);
+            resp = await callGroqChatCompletion(gKey, mName, systemPrompt, userPrompt, 'none');
           }
 
           if (!resp.ok || resp.data?.error) {
             const errMsg = String(resp.data?.error?.message || resp.data?.error?.code || `HTTP ${resp.status}`);
             const lower = errMsg.toLowerCase();
-            lastErrorDetail = `${mName.split('/').pop()}: ${errMsg.substring(0, 60)}`;
+            lastErrorDetail = `${shortModel}: ${escMd(errMsg).substring(0, 65)}`;
+            console.error(`[SEEDER ERROR] ${lastErrorDetail}`);
 
             if (resp.status === 401 || lower.includes('invalid api key')) {
-              console.error(`[SEEDER] Invalid Groq Key #${kIdx + 1}`);
-              break; // Skip to next key
+              break;
             }
             if (lower.includes('decommission') || lower.includes('not exist') || lower.includes('model_not_found')) {
               deadModels.add(mName);
@@ -926,7 +1045,7 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             if (resp.status === 429 || lower.includes('rate limit') || lower.includes('tokens per')) {
               const waitMs = resp.retryAfterSec > 0
                 ? Math.min(resp.retryAfterSec * 1000, 3600000)
-                : 15 * 60 * 1000; // 15-min cooldown for rate-limited model
+                : 15 * 60 * 1000;
               modelCooldownUntil.set(cooldownKey, Date.now() + waitMs);
               rateLimitedHits++;
               continue;
@@ -934,44 +1053,60 @@ const generateQuestionsBatch = async (forcedSub?: string): Promise<{ ok: boolean
             continue;
           }
 
-          const content = resp.data?.choices?.[0]?.message?.content?.trim();
-          if (!content) continue;
+          const choice = resp.data?.choices?.[0];
+          const content = String(choice?.message?.content || '').trim();
+          const finishReason = String(choice?.finish_reason || 'unknown');
 
-          const arr = parseAIQuestionsJson(content);
-          if (arr.length === 0) {
-            lastErrorDetail = `${mName.split('/').pop()}: Empty JSON parse`;
+          if (!content) {
+            lastErrorDetail = `${shortModel}: empty content (finish=${finishReason})`;
+            console.warn(`[SEEDER WARN] ${lastErrorDetail}`);
             continue;
           }
 
-          const saved = await saveQuestionsToDB(arr, subject, topic);
-          if (saved > 0) {
-            modelRotationCursor++;
-            const shortModel = mName.split('/').pop();
-            lastSeedReport = `✅ Groq (${shortModel}) +${saved} Qs [${subject}] (Today: +${todaySeededCount})`;
-            console.log(`[SEEDER] ${lastSeedReport}`);
-            return { ok: true, count: saved, sub: subject, topic, provider: `Groq (${shortModel})` };
+          const arr = parseAIQuestionsJson(content);
+          if (arr.length === 0) {
+            lastErrorDetail = `${shortModel}: JSON parse empty (len=${content.length})`;
+            console.warn(`[SEEDER WARN] ${lastErrorDetail} | preview=${content.substring(0, 120)}`);
+            continue;
           }
+
+          const stats = await saveQuestionsToDB(arr, subject, topic);
+          if (stats.saved > 0) {
+            modelRotationCursor++;
+            lastSeedReport = `✅ Groq (${shortModel}) +${stats.saved} Qs [${subject}] (Today: +${todaySeededCount})`;
+            console.log(`[SEEDER] ${lastSeedReport} | dup=${stats.skippedDup} inv=${stats.skippedInvalid}`);
+            return { ok: true, count: stats.saved, sub: subject, topic, provider: `Groq (${shortModel})` };
+          }
+
+          lastErrorDetail = stats.dbError
+            ? `DB Err: ${escMd(stats.dbError)}`
+            : `${shortModel}: parsed ${arr.length}, 0 saved (dup=${stats.skippedDup}, inv=${stats.skippedInvalid})`;
+          console.warn(`[SEEDER ZERO SAVE] ${lastErrorDetail}`);
         } catch (err: any) {
-          lastErrorDetail = `${mName.split('/').pop()}: ${String(err?.message || 'Timeout').substring(0, 45)}`;
+          lastErrorDetail = `${shortModel}: ${escMd(String(err?.message || 'Timeout')).substring(0, 50)}`;
+          console.error(`[SEEDER CATCH] ${lastErrorDetail}`);
         }
       }
     }
 
     const qCountRes = await pool.query('SELECT COUNT(*) FROM questions').catch(() => ({ rows: [{ count: 0 }] }));
     const totalInDb = Number(qCountRes.rows[0]?.count || 0);
-    const statusMsg = rateLimitedHits > 0
+    const statusMsg = rateLimitedHits > 0 && !lastErrorDetail
       ? `⏳ Groq Cooldown (${totalInDb} Qs Ready — Auto-Resumes soon)`
-      : `⚠️ Seed Skipped (${lastErrorDetail || 'Check GROQ_API_KEY'}) | DB: ${totalInDb} Qs`;
-    lastSeedReport = statusMsg;
-    return { ok: false, count: 0, sub: subject, topic, provider: 'GROQ_WAIT', error: statusMsg };
+      : `⚠️ ${lastErrorDetail || 'No Groq model returned new Qs'} | DB: ${totalInDb} Qs`;
+    lastSeedReport = escMd(statusMsg);
+    return { ok: false, count: 0, sub: subject, topic, provider: 'GROQ_WAIT', error: lastSeedReport };
   } catch (e: any) {
-    return { ok: false, count: 0, sub: 'ERROR', topic: '', provider: 'NONE', error: e?.message };
+    const errText = escMd(String(e?.message || 'Unknown error'));
+    lastSeedReport = '⚠️ Seeder Exception: ' + errText.substring(0, 60);
+    console.error('[SEEDER FATAL]', e);
+    return { ok: false, count: 0, sub: 'ERROR', topic: '', provider: 'NONE', error: errText };
   } finally {
     isSeedingNow = false;
   }
 };
 
-// Smart Auto-Seeder: Every 8 minutes (180 batches/day across 4 Groq models = ~1,500+ unique Qs/day)
+// Smart Auto-Seeder: Every 8 minutes
 setInterval(() => {
   generateQuestionsBatch().catch(() => {});
 }, 480000);
@@ -1135,7 +1270,6 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
     return openThreePlayerLobby(chatId, subject);
   }
 
-  // Ensure subject has questions ready before starting
   const isMixed = subject.startsWith('MIXED');
   const existingCountRes = await pool.query(
     'SELECT COUNT(*) FROM questions WHERE ($1::boolean = TRUE OR subject ILIKE $2)',
@@ -1229,7 +1363,7 @@ const startHourlySubjectTest = async (chatId: number, subject: string, resumeFro
 };
 
 // =========================================================
-// INTERACTIVE 1-BY-1 SEQUENTIAL SOLO PRACTICE ENGINE (NEW!)
+// INTERACTIVE 1-BY-1 SEQUENTIAL SOLO PRACTICE ENGINE
 // =========================================================
 const finishSoloSession = async (uid: number, stoppedManually: boolean = false) => {
   const session = soloSessions.get(uid);
@@ -1301,7 +1435,6 @@ const sendNextSoloQuestion = async (uid: number) => {
     await pool.query('INSERT INTO poll_tracking(poll_id, chat_id, question_id, correct_index) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING', [sent.poll.id, session.chatId, q.id, finalIdx]).catch(() => {});
   }
 
-  // Auto-advance if user doesn't answer before timer expires
   if (session.nextTimer) clearTimeout(session.nextTimer);
   session.nextTimer = setTimeout(() => {
     const s = soloSessions.get(uid);
@@ -1459,7 +1592,6 @@ bot.on('poll_answer', async (ctx) => {
       [monthKey, uid, uname, rInc, wInc, markDelta]
     );
 
-    // Advance Solo Session smoothly after 2.5s so student can read explanation
     const solo = soloSessions.get(uid);
     if (solo && solo.active && solo.currentPollId === ans.poll_id) {
       if (isRight) solo.right++;
@@ -1677,7 +1809,7 @@ const renderMainMenu = async (ctx: any) => {
   const giftTag = await getCfg('gift_tagline');
   const adminPerms = 'post_messages+edit_messages+delete_messages+pin_messages+invite_users';
   const text =
-    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V9.0 Pro)*\n' +
+    '🎓 *प्रोफेसर स्मार्ट लाइव टेस्ट सीरीज़ (V9.1 Pro)*\n' +
     '• ⏰ *Live Time:* 8:00 AM – 11:00 PM (15 Hours Daily)\n' +
     '• ⚡ *Smart Test Mode:* 1-by-1 Solo Quiz + Mistake Notebook + Report Card\n' +
     '• 🎁 *Freemium Offer:* 1st A4 PDF Paper *FREE* | Groups *30-Day FREE Trial*\n' +
@@ -2059,7 +2191,7 @@ const renderAdmin = async (ctx: any) => {
     qCnt = Number(qRes.rows[0]?.count || 0);
     dbStatusText = '🟢 PostgreSQL Connected & Active';
   } catch (e: any) {
-    dbStatusText = '🔴 DB Error: ' + String(e?.message || '').substring(0, 40);
+    dbStatusText = '🔴 DB Error: ' + escMd(String(e?.message || '')).substring(0, 40);
   }
 
   const fsubOn = await getCfg('fsub_enabled');
@@ -2068,18 +2200,18 @@ const renderAdmin = async (ctx: any) => {
   const groqKeys = await collectGroqKeys();
 
   const txt =
-    '👑 *PROFESSOR MASTER ADMIN PANEL (V9.0 Pro)* 👑\n' +
+    '👑 *PROFESSOR MASTER ADMIN PANEL (V9.1 Pro)* 👑\n' +
     '• 🗄 *Database:* ' + dbStatusText + '\n' +
     '• ⚡ *Groq Engine:* ' + groqKeys.length + ' Active Key(s) | GPT-OSS-20B / 120B / Llama-3.3\n' +
     '• 👥 *Users:* *' + uCnt + '* | 📢 *Active Groups:* *' + gCnt + '*\n' +
     '• 📚 *Unique Question Bank:* *' + qCnt + '* (Today: +' + todaySeededCount + ')\n' +
-    '• 📡 *Seeder Status:* ' + lastSeedReport + '\n' +
+    '• 📡 *Seeder Status:* ' + escMd(lastSeedReport) + '\n' +
     '• 👥 *3-User Ready Lobby:* *' + (minCheckOn ? 'ON 🟢' : 'OFF 🔴') + '*\n' +
     '• 🔐 *2-Channel Force Sub:* *' + (fsubOn === 'true' ? 'ON 🟢' : 'OFF 🔴') + '*';
 
   const kb: any[][] = [
     [Markup.button.callback('🔑 Add Groq Keys', 'adm_set_keys'), Markup.button.callback('⚡ Seed +10 Qs', 'adm_gen10'), Markup.button.callback('🚀 Turbo +30 Qs', 'adm_gen30')],
-    [Markup.button.callback('📊 Subject Bank Stats', 'adm_sub_stats'), Markup.button.callback('🔄 Check DB & Reset Cooldown', 'adm_chk_db')],
+    [Markup.button.callback('📊 Subject Bank Stats', 'adm_sub_stats'), Markup.button.callback('🔄 Sync DB & Reset Cooldown', 'adm_chk_db')],
     [Markup.button.callback(minCheckOn ? '🔴 3-User Lobby: OFF' : '🟢 3-User Lobby: ON', 'adm_tog_min'), Markup.button.callback('➕ Link Group/Channel', 'adm_add_grp')],
     [Markup.button.callback('📌 Pin Custom Message in Groups', 'adm_bcpin'), Markup.button.callback('📢 Normal Broadcast', 'adm_bc')],
     [Markup.button.callback('🌙 Post Daily Close Report Now', 'adm_daily_rep'), Markup.button.callback('🎁 Edit ₹100 Gift Tagline', 'adm_gift')],
@@ -2126,7 +2258,7 @@ bot.action(/^adm_seedsub_(.+)$/, async (ctx) => {
   const sub = ctx.match[1];
   await ctx.answerCbQuery(`Seeding +10 Qs for ${sub}...`);
   const r = await generateQuestionsBatch(sub);
-  await safeSend(ctx.chat.id, r.ok ? `✅ *${r.provider}* से *${r.sub} (${r.topic})* के *+${r.count}* नए प्रश्न सेव हो गए!` : `ℹ️ ${r.error}`);
+  await safeSend(ctx.chat.id, r.ok ? `✅ *${r.provider}* से *${r.sub} (${r.topic})* के *+${r.count}* नए प्रश्न सेव हो गए!` : `ℹ️ ${escMd(r.error || 'No new Qs')}`);
   return renderAdmin(ctx);
 });
 
@@ -2137,18 +2269,18 @@ bot.action('adm_set_keys', async (ctx) => {
   return safeSend(
     ctx.chat.id,
     '🔑 *Groq Multi-Key Booster:*\nआप यहाँ अतिरिक्त **Groq API Keys (`gsk_...`)** कॉमा (`,`) या नई लाइन में भेज सकते हैं।\n\n' +
-    '💡 *फायदा:* सारी Keys डेटाबेस में सेव हो जाएंगी और बॉट `openai/gpt-oss-20b`, `gpt-oss-120b`, `llama-3.3-70b` के साथ सभी Keys को रोटेट करके रोज़ हज़ारों प्रश्न सेव करेगा!\n*(रद्द करने के लिए /cancel लिखें)*'
+    '💡 *फायदा:* सारी Keys डेटाबेस में सेव हो जाएंगी और बॉट `openai/gpt-oss-20b`, `llama-3.3-70b`, `gpt-oss-120b` के साथ सभी Keys को रोटेट करके रोज़ हज़ारों प्रश्न सेव करेगा!\n*(रद्द करने के लिए /cancel लिखें)*'
   );
 });
 
 bot.action('adm_chk_db', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
-  await ctx.answerCbQuery('Checking DB & Resetting Groq Cooldowns...');
+  await ctx.answerCbQuery('Syncing DB Sequence & Resetting Groq Cooldowns...');
   const ok = await initDB();
   await runDatabaseAutoCleaner();
   modelCooldownUntil.clear();
   cachedGroqModels = null;
-  await safeSend(ctx.chat.id, ok ? '✅ *PostgreSQL कनेक्टेड है, डुप्लिकेट/कचरा साफ हो गया है और सभी Groq मॉडल कूलडाउन रीसेट कर दिए गए हैं!*' : '❌ *डेटाबेस एरर:* ' + dbStatusText);
+  await safeSend(ctx.chat.id, ok ? '✅ *PostgreSQL कनेक्टेड है, ID Sequence सिंक हो गई है, और सभी Groq मॉडल कूलडाउन रीसेट कर दिए गए हैं!*' : '❌ *डेटाबेस एरर:* ' + dbStatusText);
   return renderAdmin(ctx);
 });
 
@@ -2183,7 +2315,7 @@ bot.action('adm_gen10', async (ctx) => {
   if (!isMaster(ctx.from.id)) return;
   await ctx.answerCbQuery('Seeding 10 Unique Questions via Groq...');
   const r = await generateQuestionsBatch();
-  await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए प्रश्न डेटाबेस में सेव हो गए!' : 'ℹ️ ' + r.error);
+  await safeSend(ctx.chat.id, r.ok ? '✅ *' + r.provider + '* से *' + r.sub + ' (' + r.topic + ')* के *+' + r.count + '* नए प्रश्न डेटाबेस में सेव हो गए!' : 'ℹ️ ' + escMd(r.error || 'No new Qs'));
   return renderAdmin(ctx);
 });
 
@@ -2193,12 +2325,18 @@ bot.action('adm_gen30', async (ctx) => {
   await safeSend(ctx.chat.id, '🚀 *Groq Turbo Seeder चालू:* 3 अलग-अलग मॉडल्स/विषयों से +30 यूनिक सवाल जोड़े जा रहे हैं...');
   (async () => {
     let totalAdded = 0;
+    const notes: string[] = [];
     for (let i = 0; i < 3; i++) {
       const r = await generateQuestionsBatch();
-      if (r.ok) totalAdded += r.count;
+      if (r.ok) {
+        totalAdded += r.count;
+        notes.push(`✅ ${r.sub}: +${r.count} (${r.provider})`);
+      } else {
+        notes.push(`⚠️ Batch ${i + 1}: ${escMd(r.error || 'Failed')}`);
+      }
       await sleep(1500);
     }
-    await safeSend(ctx.chat.id, '🎉 *Turbo Seed Complete:* डेटाबेस में कुल *+' + totalAdded + '* नए यूनिक प्रश्न जुड़ गए!');
+    await safeSend(ctx.chat.id, '🎉 *Turbo Seed Complete:* कुल *+' + totalAdded + '* नए प्रश्न जुड़ गए!\n' + notes.join('\n'));
   })();
   return renderAdmin(ctx);
 });
@@ -2315,7 +2453,7 @@ bot.on('message', async (ctx) => {
     cachedGroqModels = null;
 
     const r = await generateQuestionsBatch();
-    await safeSend(ctx.chat.id, '✅ *' + incomingKeys.length + ' नई Groq Key(s) सेव हो गईं!*\n' + (r.ok ? '📡 *Test Seed:* +' + r.count + ' Qs via ' + r.provider : 'ℹ️ ' + r.error));
+    await safeSend(ctx.chat.id, '✅ *' + incomingKeys.length + ' नई Groq Key(s) सेव हो गईं!*\n' + (r.ok ? '📡 *Test Seed:* +' + r.count + ' Qs via ' + r.provider : 'ℹ️ ' + escMd(r.error || 'No new Qs')));
     return renderAdmin(ctx);
   }
 
@@ -2401,7 +2539,7 @@ const launchBot = async () => {
     }, 3000);
 
     await bot.launch({ dropPendingUpdates: true });
-    console.log('Professor AI Quiz Bot V9.0 Pro Successfully Launched!');
+    console.log('Professor AI Quiz Bot V9.1 Pro Successfully Launched!');
   } catch (e: any) {
     console.error('Polling Error:', e?.message);
     setTimeout(launchBot, 6000);
