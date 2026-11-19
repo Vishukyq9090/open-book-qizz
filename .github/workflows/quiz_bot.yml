@@ -22,23 +22,25 @@ jobs:
     timeout-minutes: 350
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: '22'
+          package-manager-cache: false
       - name: Install and Build
+        id: build
         run: npm install && npm run build
       - name: Run Bot
+        id: run_bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          ADMIN_ID: ${{ secrets.ADMIN_ID }}
+          ADMIN_ID: ${{ secrets.ADMIN_ID || '7412791600' }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: timeout --signal=SIGTERM --kill-after=15s 19800s npm start || true
       - name: Auto Restart Next Session
-        if: always()
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run quiz_bot.yml --repo ${{ github.repository }} || true
